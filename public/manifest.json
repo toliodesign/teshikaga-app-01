@@ -1,0 +1,15 @@
+{
+  "name": "弟子屈町 次の1本",
+  "short_name": "次の1本",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1C2B22",
+  "theme_color": "#1C2B22",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
