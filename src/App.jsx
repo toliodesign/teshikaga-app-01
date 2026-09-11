@@ -293,7 +293,7 @@ export default function App() {
             </div>
 
             <div style={styles.directionRow}>
-              <div style={styles.directionCol} onClick={() => setPopup({ kind: 'jr', direction: 'abashiri' })}>
+              <div style={{ ...styles.directionCol, ...styles.directionColJr }} onClick={() => setPopup({ kind: 'jr', direction: 'abashiri' })}>
                 <div style={styles.directionLabel}>← 網走方面</div>
                 {abashiriNext != null ? (
                   <div style={styles.nextTime}>{fmt(abashiriNext)}</div>
@@ -302,8 +302,7 @@ export default function App() {
                 )}
                 <div style={styles.tapHint}>タップで全便表示</div>
               </div>
-              <div style={styles.colDivider} />
-              <div style={styles.directionCol} onClick={() => setPopup({ kind: 'jr', direction: 'kushiro' })}>
+              <div style={{ ...styles.directionCol, ...styles.directionColJr }} onClick={() => setPopup({ kind: 'jr', direction: 'kushiro' })}>
                 <div style={styles.directionLabel}>釧路方面 →</div>
                 {kushiroNext != null ? (
                   <div style={styles.nextTime}>{fmt(kushiroNext)}</div>
@@ -323,8 +322,8 @@ export default function App() {
             </div>
 
             <div style={styles.directionRow}>
-              <div style={styles.directionCol} onClick={() => setPopup({ kind: 'bus', direction: 'to_kawayu' })}>
-                <div style={styles.busDirectionLabel}>← 大鵬相撲記念館前方面</div>
+              <div style={{ ...styles.directionCol, ...styles.directionColBus }} onClick={() => setPopup({ kind: 'bus', direction: 'to_kawayu' })}>
+                <div style={styles.busDirectionLabel}>← 大鵬相撲記念館方面</div>
                 {busNext.to_kawayu ? (
                   <>
                     <div style={styles.nextTime}>{fmt(busNext.to_kawayu.time)}</div>
@@ -335,8 +334,7 @@ export default function App() {
                 )}
                 <div style={styles.tapHintOnBus}>タップで全便表示</div>
               </div>
-              <div style={styles.colDivider} />
-              <div style={styles.directionCol} onClick={() => setPopup({ kind: 'bus', direction: 'to_mashu' })}>
+              <div style={{ ...styles.directionCol, ...styles.directionColBus }} onClick={() => setPopup({ kind: 'bus', direction: 'to_mashu' })}>
                 <div style={styles.busDirectionLabel}>摩周方面 →</div>
                 {busNext.to_mashu ? (
                   <>
@@ -426,7 +424,10 @@ function TimetablePopup({ station, direction, nowMin, onClose }) {
     <div style={styles.popupOverlay} onClick={onClose}>
       <div style={styles.popupBox} onClick={(e) => e.stopPropagation()}>
         <div style={styles.popupHeader}>
-          <div style={styles.popupStationName}>{station.name}駅</div>
+          <div style={styles.popupStationName}>
+            <span style={styles.jrBadge}>JR</span>
+            {station.name}駅
+          </div>
           <div style={styles.popupDirectionLabel}>{label}</div>
         </div>
         <div style={styles.popupList}>
@@ -461,8 +462,11 @@ function BusTimetablePopup({ busStopKey, direction, nowMin, onClose }) {
     <div style={styles.popupOverlay} onClick={onClose}>
       <div style={styles.popupBox} onClick={(e) => e.stopPropagation()}>
         <div style={styles.popupHeader}>
-          <div style={styles.popupStationName}>{stop?.stopName}</div>
-          <div style={{ ...styles.popupDirectionLabel, background: 'rgba(28,43,34,0.75)', color: '#F5F2EA' }}>{label}</div>
+          <div style={styles.popupStationName}>
+            <span style={styles.busBadge}>BUS</span>
+            {stop?.stopName}
+          </div>
+          <div style={styles.popupDirectionLabel}>{label}</div>
         </div>
         <div style={styles.popupList}>
           {trips.length === 0 && (
@@ -604,8 +608,11 @@ const styles = {
     width: 16,
   },
   jrSection: {
-    borderTop: '1px solid #E2DDCF',
-    paddingTop: 18,
+    background: '#EAF2ED',
+    border: '1px solid #D7E7DE',
+    borderRadius: 14,
+    marginTop: 22,
+    padding: 16,
   },
   jrLabelRow: {
     display: 'flex',
@@ -617,17 +624,19 @@ const styles = {
   jrBadge: {
     fontSize: 12,
     fontWeight: 800,
-    border: '1.5px solid #1C2B22',
+    color: '#FFFFFF',
+    background: '#2F813F',
     borderRadius: 5,
     padding: '2px 6px',
   },
   jrLine: {
-    fontSize: 13,
-    color: '#8A8578',
-    fontWeight: 600,
+    fontSize: 19.5,
+    color: '#3D6B4C',
+    fontWeight: 700,
   },
   busSection: {
-    background: '#C8F1F3',
+    background: '#E3F5F6',
+    border: '1px solid #C8F1F3',
     borderRadius: 14,
     marginTop: 22,
     padding: 16,
@@ -642,34 +651,32 @@ const styles = {
   busBadge: {
     fontSize: 12,
     fontWeight: 800,
-    color: '#F5F2EA',
+    color: '#FFFFFF',
     background: '#3FB696',
     borderRadius: 5,
     padding: '2px 6px',
   },
   busLine: {
-    fontSize: 13,
-    color: '#2B2A26',
-    fontWeight: 600,
-    opacity: 0.65,
+    fontSize: 19.5,
+    color: '#1F7A6E',
+    fontWeight: 700,
   },
   busDirectionLabel: {
     display: 'inline-block',
-    fontSize: 15.5,
-    color: '#F5F2EA',
-    background: 'rgba(28,43,34,0.75)',
+    fontSize: 13,
+    color: '#6B3A2E',
+    background: '#FBEFB0',
     fontWeight: 800,
     letterSpacing: 0.2,
-    padding: '5px 10px',
+    padding: '3px 9px',
     borderRadius: 5,
     marginBottom: 10,
   },
   tripIdLabel: {
-    fontSize: 12,
-    color: '#2B2A26',
+    fontSize: 11,
+    color: '#5C8A83',
     fontWeight: 700,
-    opacity: 0.65,
-    marginTop: 4,
+    marginTop: 2,
   },
   busWarning: {
     marginTop: 14,
@@ -684,45 +691,48 @@ const styles = {
   directionRow: {
     display: 'flex',
     alignItems: 'stretch',
+    gap: 10,
   },
   directionCol: {
     flex: 1,
     textAlign: 'center',
-    padding: '0 8px',
+    padding: '10px 6px',
     cursor: 'pointer',
     borderRadius: 12,
     transition: 'background 0.15s',
   },
-  colDivider: {
-    width: 1,
-    background: '#E2DDCF',
+  directionColJr: {
+    background: '#DCEBE2',
+  },
+  directionColBus: {
+    background: '#CBEAEC',
   },
   directionLabel: {
     display: 'inline-block',
-    fontSize: 22.1,
-    color: '#F5F2EA',
-    background: 'rgba(28,43,34,0.7)',
+    fontSize: 13,
+    color: '#6B3A2E',
+    background: '#FBEFB0',
     fontWeight: 800,
-    letterSpacing: 0.3,
-    padding: '5px 10px',
+    letterSpacing: 0.2,
+    padding: '3px 9px',
     borderRadius: 5,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   nextTime: {
-    fontSize: 34,
+    fontSize: 28,
     fontWeight: 800,
     fontVariantNumeric: 'tabular-nums',
-    color: '#C94E3F',
+    color: '#B34129',
   },
   noMore: {
     fontSize: 15,
-    color: '#8A8578',
+    color: '#6E6A62',
     fontWeight: 700,
     padding: '10px 0',
   },
   tapHint: {
     fontSize: 10.5,
-    color: '#B5B0A2',
+    color: '#6B8577',
     marginTop: 8,
     fontWeight: 600,
   },
@@ -757,16 +767,19 @@ const styles = {
     marginBottom: 4,
   },
   popupStationName: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
     fontSize: 20,
     fontWeight: 800,
   },
   popupDirectionLabel: {
     display: 'inline-block',
-    fontSize: 12.5,
-    color: '#F5F2EA',
-    background: '#C94E3F',
+    fontSize: 16,
+    color: '#6B3A2E',
+    background: '#FBEFB0',
     fontWeight: 800,
-    padding: '3px 9px',
+    padding: '5px 12px',
     borderRadius: 5,
     marginTop: 8,
     marginBottom: 14,
