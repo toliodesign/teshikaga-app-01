@@ -1,0 +1,18 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #1C2B22;
+  /* スマホのアドレスバーの伸び縮みで下に余白ができても、
+     常にアプリと同じ濃緑が見えるようにする */
+  min-height: 100%;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  #root {
+    min-height: 100dvh;
+  }
+}
