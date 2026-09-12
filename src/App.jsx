@@ -393,6 +393,11 @@ export default function App() {
         <p style={styles.footerNote}>
           出典：JR北海道 釧網本線時刻表（Yahoo!路線情報より確認）／阿寒バス 美留和線時刻表（弟子屈バスマップ 令和8年4月発行）。いずれも平日・土曜・日曜祝日とも同じダイヤです。
         </p>
+
+        <div style={styles.creditRow}>
+          <img src="/logo_toliodesign.png" alt="tolio design" style={styles.creditLogo} />
+          <span style={styles.creditText}>制作：tolio design</span>
+        </div>
       </div>
     </div>
   );
@@ -869,5 +874,22 @@ const styles = {
     textAlign: 'center',
     lineHeight: 1.7,
     marginTop: 20,
+  },
+  creditRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 14,
+  },
+  creditLogo: {
+    width: 16,
+    height: 16,
+    opacity: 0.75,
+  },
+  creditText: {
+    fontSize: 11,
+    color: 'rgba(245,242,234,0.45)',
+    letterSpacing: 0.3,
   },
 };
