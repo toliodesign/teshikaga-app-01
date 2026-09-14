@@ -25,6 +25,7 @@ const STATIONS = [
     kana: 'KAWAYU',
     color: '#EE0025',
     busStopKey: 'kawayu',
+    unkouUrl: 'https://www3.jrhokkaido.co.jp/webunkou/timetable.html?id=392',
     // 上り = 釧路方面、下り = 網走方面
     kushiro: [toMin(6, 11), toMin(8, 20), toMin(11, 59), toMin(16, 55), toMin(18, 18)],
     abashiri: [toMin(8, 20), toMin(10, 29), toMin(15, 51), toMin(18, 18)],
@@ -36,6 +37,7 @@ const STATIONS = [
     kana: 'BIRUWA',
     color: '#2F813F',
     busStopKey: 'biruwa',
+    unkouUrl: 'https://www3.jrhokkaido.co.jp/webunkou/timetable.html?id=391',
     kushiro: [toMin(6, 18), toMin(8, 28), toMin(12, 7), toMin(17, 3), toMin(18, 27)],
     abashiri: [toMin(8, 9), toMin(10, 21), toMin(15, 43), toMin(18, 10), toMin(20, 54)],
   },
@@ -46,6 +48,7 @@ const STATIONS = [
     kana: 'MASHU',
     color: '#0098DF',
     busStopKey: 'mashu',
+    unkouUrl: 'https://www3.jrhokkaido.co.jp/webunkou/timetable.html?id=390',
     kushiro: [toMin(6, 28), toMin(8, 37), toMin(12, 16), toMin(17, 13), toMin(19, 1), toMin(19, 50)],
     abashiri: [toMin(8, 0), toMin(10, 12), toMin(15, 34), toMin(18, 1), toMin(20, 45)],
   },
@@ -312,6 +315,16 @@ export default function App() {
                 <div style={styles.tapHint}>タップで全便表示</div>
               </div>
             </div>
+
+            <a
+              href={station.unkouUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={styles.unkouButton}
+            >
+              運行情報
+              <span style={styles.externalIcon} aria-hidden="true">↗</span>
+            </a>
           </div>
 
           {/* 阿寒バス 美留和線 方面別 次の1本 */}
@@ -638,6 +651,25 @@ const styles = {
     fontSize: 19.5,
     color: '#3D6B4C',
     fontWeight: 700,
+  },
+  unkouButton: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 10,
+    padding: '10px 0',
+    background: '#2F813F',
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: 700,
+    borderRadius: 10,
+    textDecoration: 'none',
+  },
+  externalIcon: {
+    fontSize: 13,
+    fontWeight: 800,
+    lineHeight: 1,
   },
   busSection: {
     background: '#E3F5F6',
