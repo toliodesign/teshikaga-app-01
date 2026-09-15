@@ -95,6 +95,7 @@ const BUS_DIRECTION_LABEL = {
 };
 // 91・93・98便は「摩周駅前⇔開発前」間のみの区間便で、美留和・川湯駅には行かない
 // （BUS_STOPSのkawayu・biruwaのtimesに91・93・98が含まれていないことで、自動的に反映されている）
+// ※ tripIdはObject.entries()由来のため常に文字列。ここも文字列で統一している。
 const BUS_SECTION_ONLY_TRIPS = ['91', '93', '98'];
 
 // 指定バス停の、方向ごとに分かれた「次の1本」を返す。
@@ -127,7 +128,8 @@ function allBusTimesByDirection(busStopKey) {
   return grouped;
 }
 
-// 現在時刻（分）を取得。テスト用に、URLやここを直接書き換えて確認できるようにしてある。
+// 実際の現在時刻（分）を、端末の時計から取得する。
+// 「本当の現在時刻」を保持する役割で、隠し時刻スワイプ機能（App内のtimeOffset）とは別。
 function useNowMinutes() {
   const [now, setNow] = useState(() => {
     const d = new Date();
@@ -230,7 +232,6 @@ export default function App() {
   }, []);
 
   // ---- 隠し機能：ヘッダーの時刻表示を左右にスワイプすると、仮の時刻に変更できる ----
-  // timeOffsetは「本当の現在時刻」からのズレ（分）。タップで0に戻す。
   // 指を左右に動かした量(px)を分に換算する。感度は「画面幅いっぱいのスワイプで約3時間分」を目安にした。
   const timeTouchStartX = useRef(null);
   const timeTouchStartOffset = useRef(0);
@@ -475,7 +476,7 @@ function StationPanel({ station, width }) {
   );
 }
 
-// 長押しで開く、その方面の一日全便を縦に並べたポップアップ。
+// タップで開く、その方面の一日全便を縦に並べたポップアップ。
 // 現在時刻より前の便は薄く表示し、次に来る1本には目印を付ける。
 function TimetablePopup({ station, direction, nowMin, onClose }) {
   const times = (direction === 'kushiro' ? station.kushiro : station.abashiri).slice().sort((a, b) => a - b);
