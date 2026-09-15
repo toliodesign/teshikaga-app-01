@@ -9,8 +9,11 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 
 const toMin = (h, m) => h * 60 + m;
 function fmt(min) {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
+  // 隠し時刻スワイプ機能により、minが0未満や1440以上になることがあるため、
+  // 常に0〜1439の範囲（24時間表記）に丸めてから表示する。
+  const normalized = ((min % 1440) + 1440) % 1440;
+  const h = Math.floor(normalized / 60);
+  const m = normalized % 60;
   return `${h}:${String(m).padStart(2, '0')}`;
 }
 
@@ -149,14 +152,21 @@ function nextTrain(times, nowMin) {
 
 export default function App() {
   const nowMin = useNowMinutes();
+
+  // ---- 隠し機能：ヘッダーの時刻表示を左右にスワイプすると、仮の時刻に変更できる ----
+  // timeOffsetは「本当の現在時刻」からのズレ（分）。タップで0に戻す。
+  // displayMinが、画面全体で実際に「現在時刻」として使う値。
+  const [timeOffset, setTimeOffset] = useState(0);
+  const displayMin = ((nowMin + timeOffset) % 1440 + 1440) % 1440;
+
   const [index, setIndex] = useState(1); // 初期表示は美留和駅
   const station = STATIONS[index];
 
   const leftStation = index > 0 ? STATIONS[index - 1] : null;
   const rightStation = index < STATIONS.length - 1 ? STATIONS[index + 1] : null;
 
-  const kushiroNext = useMemo(() => nextTrain(station.kushiro, nowMin), [station, nowMin]);
-  const abashiriNext = useMemo(() => nextTrain(station.abashiri, nowMin), [station, nowMin]);
+  const kushiroNext = useMemo(() => nextTrain(station.kushiro, displayMin), [station, displayMin]);
+  const abashiriNext = useMemo(() => nextTrain(station.abashiri, displayMin), [station, displayMin]);
 
   // ---- スワイプ操作 ----
   // 「前の駅名」「今の駅名」「次の駅名」の3枚を横に並べておき、
@@ -219,6 +229,33 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // ---- 隠し機能：ヘッダーの時刻表示を左右にスワイプすると、仮の時刻に変更できる ----
+  // timeOffsetは「本当の現在時刻」からのズレ（分）。タップで0に戻す。
+  // 指を左右に動かした量(px)を分に換算する。感度は「画面幅いっぱいのスワイプで約3時間分」を目安にした。
+  const timeTouchStartX = useRef(null);
+  const timeTouchStartOffset = useRef(0);
+  const timeMoved = useRef(false);
+  const handleTimeTouchStart = (e) => {
+    timeTouchStartX.current = e.touches[0].clientX;
+    timeTouchStartOffset.current = timeOffset;
+    timeMoved.current = false;
+  };
+  const handleTimeTouchMove = (e) => {
+    if (timeTouchStartX.current == null) return;
+    const dx = e.touches[0].clientX - timeTouchStartX.current;
+    if (Math.abs(dx) > 4) timeMoved.current = true; // わずかな指ブレはタップ扱いのまま
+    const minutesPerPixel = 180 / Math.max(panelWidth, 1); // 画面幅いっぱいで約3時間分
+    const deltaMin = Math.round(dx * minutesPerPixel);
+    setTimeOffset(timeTouchStartOffset.current + deltaMin);
+  };
+  const handleTimeTouchEnd = () => {
+    if (!timeMoved.current) {
+      // 指がほぼ動いていなければタップとみなし、本来の現在時刻に戻す
+      setTimeOffset(0);
+    }
+    timeTouchStartX.current = null;
+  };
+
   // ---- タップで全時刻ポップアップ ----
   // kind: 'jr' | 'bus'。jrはdirectionに'kushiro'|'abashiri'、busは'to_mashu'|'to_kawayu'を使う。
   const [popup, setPopup] = useState(null);
@@ -226,15 +263,22 @@ export default function App() {
 
   // 現在の駅に対応するバス停の「次の1本」（方向ごと）
   const busNext = useMemo(
-    () => nextBusByDirection(station.busStopKey, nowMin),
-    [station, nowMin]
+    () => nextBusByDirection(station.busStopKey, displayMin),
+    [station, displayMin]
   );
   const busStopName = BUS_STOPS[station.busStopKey]?.stopName || '';
 
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        <div style={styles.currentTimeRow}>{fmt(nowMin)} 現在</div>
+        <div
+          style={styles.currentTimeRow}
+          onTouchStart={handleTimeTouchStart}
+          onTouchMove={handleTimeTouchMove}
+          onTouchEnd={handleTimeTouchEnd}
+        >
+          {fmt(displayMin)} 現在
+        </div>
 
         <div
           style={styles.board}
@@ -374,7 +418,7 @@ export default function App() {
           <TimetablePopup
             station={station}
             direction={popup.direction}
-            nowMin={nowMin}
+            nowMin={displayMin}
             onClose={closePopup}
           />
         )}
@@ -383,7 +427,7 @@ export default function App() {
           <BusTimetablePopup
             busStopKey={station.busStopKey}
             direction={popup.direction}
-            nowMin={nowMin}
+            nowMin={displayMin}
             onClose={closePopup}
           />
         )}
