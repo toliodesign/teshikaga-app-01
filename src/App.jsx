@@ -448,6 +448,10 @@ export default function App() {
           ))}
         </div>
 
+        <p style={styles.disclaimerNote}>
+          【注意】内容は目安とし、ご自身でご確認の上ご利用ください
+        </p>
+
         <p style={styles.footerNote}>
           出典：JR北海道 釧網本線時刻表（Yahoo!路線情報より確認）／阿寒バス 美留和線時刻表（弟子屈バスマップ 令和8年4月発行）。いずれも平日・土曜・日曜祝日とも同じダイヤです。
         </p>
@@ -945,12 +949,19 @@ const styles = {
     borderColor: '#F5F2EA',
     color: '#1C2B22',
   },
+  disclaimerNote: {
+    fontSize: 12,
+    color: 'rgba(245,242,234,0.45)',
+    textAlign: 'center',
+    lineHeight: 1.7,
+    marginTop: 20,
+  },
   footerNote: {
     fontSize: 11,
     color: 'rgba(245,242,234,0.45)',
     textAlign: 'center',
     lineHeight: 1.7,
-    marginTop: 20,
+    marginTop: 10,
   },
   creditRow: {
     display: 'flex',
