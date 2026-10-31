@@ -128,6 +128,31 @@ function allBusTimesByDirection(busStopKey) {
   return grouped;
 }
 
+// ============================================================
+// JR摩周駅 窓口営業時間（利用者提供）
+// ============================================================
+const MASHU_WINDOW = {
+  label: 'JR摩周駅',
+  tel: '011-222-7111',
+  telHref: 'tel:0112227111',
+  slots: [
+    [toMin(6, 15), toMin(6, 40)],
+    [toMin(7, 30), toMin(10, 30)],
+    [toMin(11, 30), toMin(13, 10)],
+    [toMin(14, 30), toMin(15, 10)],
+  ],
+};
+const SLOT_NUMBERS = ['①', '②', '③', '④'];
+// 営業中ならその枠、まだ始まっていなければ次の枠を返す。本日の営業が全部終わっていればnull。
+function nextWindowSlot(nowMin) {
+  for (let i = 0; i < MASHU_WINDOW.slots.length; i++) {
+    const [start, end] = MASHU_WINDOW.slots[i];
+    if (nowMin >= start && nowMin < end) return { index: i, open: true };
+    if (nowMin < start) return { index: i, open: false };
+  }
+  return null;
+}
+
 // 実際の現在時刻（分）を、端末の時計から取得する。
 // 「本当の現在時刻」を保持する役割で、隠し時刻スワイプ機能（App内のtimeOffset）とは別。
 function useNowMinutes() {
@@ -269,18 +294,69 @@ export default function App() {
   );
   const busStopName = BUS_STOPS[station.busStopKey]?.stopName || '';
 
-  return (
-    <div style={styles.page}>
-      <div style={styles.container}>
+  // お知らせ：初めて開いたときだけ、0.7秒後に画面中央へ円形で表示し、開いてから4秒後に消す。
+  // 「見た」記録は端末のlocalStorageに残す（使えない環境ではエラーにせず、毎回表示になる）。
+  // 確認用：アドレスの末尾に #notice を付けて開くと、記録に関係なく表示する。
+  const NOTICE_KEY = 'teshikaga-notice-mashu-window-v1';
+  const [noticeVisible, setNoticeVisible] = useState(false);
+  useEffect(() => {
+    let seen = false;
+    try { seen = localStorage.getItem(NOTICE_KEY) === '1'; } catch (e) { /* 記録できない場合は表示する */ }
+    if (window.location.hash === '#notice') seen = false;
+    if (seen) return;
+    const showTimer = setTimeout(() => {
+      setNoticeVisible(true);
+      try { localStorage.setItem(NOTICE_KEY, '1'); } catch (e) { /* 何もしない */ }
+    }, 700);
+    const hideTimer = setTimeout(() => setNoticeVisible(false), 4000);
+    return () => { clearTimeout(showTimer); clearTimeout(hideTimer); };
+  }, []);
+
+  const winSlot = nextWindowSlot(displayMin);
+  const winBadge = !winSlot ? null : winSlot.open ? '営業中' : '次';
+  const winTime = !winSlot
+    ? '本日の営業は終了しました'
+    : winSlot.open
+      ? `〜${fmt(MASHU_WINDOW.slots[winSlot.index][1])}`
+      : `${fmt(MASHU_WINDOW.slots[winSlot.index][0])}～${fmt(MASHU_WINDOW.slots[winSlot.index][1])}`;
+
+  // 白い駅名カードの中に入れる時計。左右の矢印で10分ずつ、数字を左右にスワイプで1分刻みに動かせる。
+  // 駅切り替えのスワイプと混ざらないよう、タッチ操作は外へ伝えない。
+  const stop = (e) => e.stopPropagation();
+  const clockEl = (
+    <div style={styles.clockWrap} onTouchStart={stop} onTouchMove={stop} onTouchEnd={stop}>
+      <div style={styles.clockRow}>
+        <button style={styles.clockArrow} onClick={() => setTimeOffset(o => o - 10)} aria-label="10分戻す">←</button>
         <div
-          style={styles.currentTimeRow}
+          style={styles.clockTime}
           onTouchStart={handleTimeTouchStart}
           onTouchMove={handleTimeTouchMove}
           onTouchEnd={handleTimeTouchEnd}
         >
-          {fmt(displayMin)} 現在
+          {fmt(displayMin)}
         </div>
+        <button style={styles.clockArrow} onClick={() => setTimeOffset(o => o + 10)} aria-label="10分進める">→</button>
+      </div>
+      <div style={styles.clockResetRow}>
+        <button
+          style={{ ...styles.clockReset, visibility: timeOffset !== 0 ? 'visible' : 'hidden' }}
+          onClick={() => setTimeOffset(0)}
+        >
+          現在時刻に戻す
+        </button>
+      </div>
+    </div>
+  );
 
+  return (
+    <div style={styles.page}>
+      <div
+        style={{ ...styles.notice, opacity: noticeVisible ? 1 : 0, transform: `translate(-50%, -50%) scale(${noticeVisible ? 1 : 0.9})` }}
+        aria-live="polite"
+      >
+        JR摩周駅の<br />窓口営業時間を<br />追加しました
+      </div>
+      <div style={styles.container}>
         <div
           style={styles.board}
           onTouchStart={handleTouchStart}
@@ -297,9 +373,9 @@ export default function App() {
                 transition: isDragging ? 'none' : 'transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)',
               }}
             >
-              <StationPanel station={leftStation} width={panelWidth} />
-              <StationPanel station={station} width={panelWidth} />
-              <StationPanel station={rightStation} width={panelWidth} />
+              <StationPanel station={leftStation} width={panelWidth} clock={clockEl} />
+              <StationPanel station={station} width={panelWidth} clock={clockEl} />
+              <StationPanel station={rightStation} width={panelWidth} clock={clockEl} />
             </div>
           </div>
 
@@ -370,6 +446,22 @@ export default function App() {
               運行情報
               <span style={styles.externalIcon} aria-hidden="true">↗</span>
             </a>
+
+            {station.key === 'mashu' && (
+              <button style={styles.windowButton} onClick={() => setPopup({ kind: 'window' })}>
+                <div style={styles.windowTextCol}>
+                  <div style={styles.windowCaption}>
+                    <span style={styles.windowTag}>{MASHU_WINDOW.label}</span>
+                    窓口営業時間
+                  </div>
+                  <div style={{ ...styles.windowValue, ...(winSlot ? {} : styles.windowValueOff) }}>
+                    {winBadge && <span style={styles.windowBadge}>{winBadge}</span>}
+                    {winTime}
+                  </div>
+                </div>
+                <span style={styles.windowChevron} aria-hidden="true">›</span>
+              </button>
+            )}
           </div>
 
           {/* 阿寒バス 美留和線 方面別 次の1本 */}
@@ -424,6 +516,10 @@ export default function App() {
           />
         )}
 
+        {popup && popup.kind === 'window' && (
+          <WindowPopup nowMin={displayMin} onClose={closePopup} />
+        )}
+
         {popup && popup.kind === 'bus' && (
           <BusTimetablePopup
             busStopKey={station.busStopKey}
@@ -457,7 +553,12 @@ export default function App() {
         </p>
 
         <div style={styles.creditRow}>
-          <img src="/logo_toliodesign.png" alt="tolio design" style={styles.creditLogo} />
+          <img
+            src="/logo_toliodesign.png"
+            alt="tolio design"
+            style={styles.creditLogo}
+            onError={(e) => { e.target.style.display = 'none'; }}
+          />
           <span style={styles.creditText}>制作：tolio design</span>
         </div>
       </div>
@@ -466,11 +567,12 @@ export default function App() {
 }
 
 // 駅名パネル1枚分。stationがnull（両端の外側）の場合は空欄にする。
-function StationPanel({ station, width }) {
+function StationPanel({ station, width, clock }) {
   return (
     <div style={{ ...styles.stationNameWrap, width, flexShrink: 0 }}>
       {station && (
         <div style={styles.stationNameBox}>
+          {clock}
           <div style={styles.stationRuby}>{station.ruby}</div>
           <div style={{ ...styles.stationName, color: station.color }}>{station.name}</div>
           <div style={styles.stationKana}>{station.kana}</div>
@@ -511,6 +613,40 @@ function TimetablePopup({ station, direction, nowMin, onClose }) {
             </div>
           ))}
         </div>
+        <button style={styles.popupCloseButton} onClick={onClose}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
+// JR摩周駅 窓口営業時間のポップアップ
+function WindowPopup({ nowMin, onClose }) {
+  const slot = nextWindowSlot(nowMin);
+  return (
+    <div style={styles.popupOverlay} onClick={onClose}>
+      <div style={styles.popupBox} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.popupHeader}>
+          <div style={styles.popupStationName}>
+            <span style={styles.jrBadge}>JR</span>
+            摩周駅
+          </div>
+          <div style={styles.popupDirectionLabel}>窓口営業時間</div>
+        </div>
+        <div style={styles.popupList}>
+          {MASHU_WINDOW.slots.map(([start, end], i) => {
+            const isNext = slot && slot.index === i;
+            return (
+              <div key={i} style={{ ...styles.popupTimeRow, ...(isNext ? styles.windowRowNext : {}) }}>
+                <div>
+                  <span style={styles.windowNumber}>{SLOT_NUMBERS[i]}</span>
+                  <span style={styles.popupTime}>{fmt(start)}～{fmt(end)}</span>
+                </div>
+                {isNext && <span style={styles.popupNextBadge}>{slot.open ? '営業中' : '次'}</span>}
+              </div>
+            );
+          })}
+        </div>
+        <a href={MASHU_WINDOW.telHref} style={styles.windowTel}>☎︎ {MASHU_WINDOW.tel}</a>
         <button style={styles.popupCloseButton} onClick={onClose}>閉じる</button>
       </div>
     </div>
@@ -566,6 +702,52 @@ function BusTimetablePopup({ busStopKey, direction, nowMin, onClose }) {
 }
 
 const styles = {
+  notice: {
+    position: 'fixed', top: '50%', left: '50%', width: 250, height: 250, borderRadius: '50%',
+    background: '#0098DF', color: '#FFFFFF',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+    fontSize: 23, fontWeight: 800, lineHeight: 1.6, boxShadow: '0 8px 28px rgba(0,0,0,0.35)',
+    zIndex: 200, pointerEvents: 'none', transition: 'opacity 0.4s, transform 0.4s',
+  },
+  clockWrap: { marginBottom: 6 },
+  clockRow: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 },
+  clockArrow: {
+    width: 38, height: 38, borderRadius: '50%', border: '1px solid #D8D3C6',
+    background: '#FBFAF7', color: '#5E5A52', fontSize: 18, cursor: 'pointer', padding: 0,
+  },
+  clockTime: {
+    minWidth: 120, textAlign: 'center', fontSize: 22, fontWeight: 800, color: '#5E5A52',
+    fontVariantNumeric: 'tabular-nums', letterSpacing: 0.5, touchAction: 'none', cursor: 'ew-resize',
+  },
+  clockResetRow: { height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  clockReset: {
+    fontSize: 12, color: '#FFFFFF', background: '#5E7A68', border: 'none',
+    borderRadius: 12, padding: '4px 12px', cursor: 'pointer',
+  },
+  windowButton: {
+    position: 'relative', display: 'flex', alignItems: 'center', gap: 10, width: '100%', marginTop: 10,
+    padding: '11px 30px', background: '#FFFFFF', border: '1.5px solid #2F813F',
+    borderRadius: 12, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', color: '#1C2B22',
+  },
+  windowTextCol: { flex: 1, textAlign: 'center' },
+  windowCaption: { fontSize: 17, color: '#0B3D18', fontWeight: 800 },
+  windowBadge: {
+    display: 'inline-block', background: '#FBEFB0', color: '#C0392B', fontSize: 14,
+    fontWeight: 800, padding: '2px 9px', borderRadius: 6, marginRight: 8, verticalAlign: 'middle',
+  },
+  windowTag: {
+    display: 'inline-block', background: '#2F813F', color: '#FFFFFF', fontSize: 12,
+    fontWeight: 800, padding: '2px 8px', borderRadius: 6, marginRight: 8, verticalAlign: 'middle',
+  },
+  windowValue: { fontSize: 19, fontWeight: 800, color: '#0B3D18', marginTop: 4, fontVariantNumeric: 'tabular-nums' },
+  windowValueOff: { fontSize: 16, color: '#6E6A62' },
+  windowChevron: { position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 22, color: '#2F813F' },
+  windowRowNext: { background: '#FBEFB0', borderRadius: 8 },
+  windowNumber: { color: '#B8442F', fontWeight: 800, marginRight: 10, fontSize: 19 },
+  windowTel: {
+    display: 'block', marginTop: 14, padding: '8px 4px', fontSize: 21, fontWeight: 800,
+    color: '#2F813F', textDecoration: 'none',
+  },
   page: {
     minHeight: '100vh',
     background: '#1C2B22',
