@@ -710,13 +710,13 @@ const styles = {
     zIndex: 200, pointerEvents: 'none', transition: 'opacity 0.4s, transform 0.4s',
   },
   clockWrap: { marginBottom: 6 },
-  clockRow: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 },
+  clockRow: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 },
   clockArrow: {
     width: 38, height: 38, borderRadius: '50%', border: '1px solid #D8D3C6',
     background: '#FBFAF7', color: '#5E5A52', fontSize: 18, cursor: 'pointer', padding: 0,
   },
   clockTime: {
-    minWidth: 120, textAlign: 'center', fontSize: 22, fontWeight: 800, color: '#5E5A52',
+    minWidth: 76, textAlign: 'center', fontSize: 22, fontWeight: 800, color: '#5E5A52',
     fontVariantNumeric: 'tabular-nums', letterSpacing: 0.5, touchAction: 'none', cursor: 'ew-resize',
   },
   clockResetRow: { height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' },
@@ -790,17 +790,17 @@ const styles = {
   neighborButton: {
     display: 'flex',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
     background: 'none',
     border: 'none',
     padding: '6px 4px',
     cursor: 'pointer',
     color: '#8A8578',
-    fontSize: 14,
-    fontWeight: 600,
+    fontSize: 20,
+    fontWeight: 700,
   },
   neighborArrow: {
-    fontSize: 14,
+    fontSize: 20,
     color: '#C94E3F',
   },
   neighborName: {
