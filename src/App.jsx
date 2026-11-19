@@ -1,1165 +1,654 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 
-// ============================================================
-// 「次の1本」速報画面
-// JR釧網本線 3駅（摩周駅・美留和駅・川湯温泉駅）が対象。
-// データ出典：Yahoo!路線情報のJR釧網本線時刻表（利用者提供・確認済み）
-// 平日・土曜・日曜祝日ですべて同じダイヤであることを確認済み。
-// ============================================================
+import timetable from './timetable.json';
 
+// ============ データ ============
+// 時刻データは timetable.json に分けてあります。時刻表の改定時は、そのファイルだけを直してください。
+// 直したあとは `npm run check` で入力ミスを検査できます。
 const toMin = (h, m) => h * 60 + m;
+const parseTime = (str) => {
+  const [h, m] = str.split(':').map(Number);
+  return toMin(h, m);
+};
+
+const busTrips = timetable.busTrips.map(t => ({
+  id: t.id,
+  dir: t.dir,
+  sectionOnly: !!t.sectionOnly,
+  stops: Object.fromEntries(Object.entries(t.stops).map(([k, v]) => [k, parseTime(v)])),
+}));
+
+const jrTimes = Object.fromEntries(
+  Object.entries(timetable.jr).map(([k, v]) => [k, {
+    name: v.name,
+    kushiro: v.kushiro.map(parseTime),
+    abashiri: v.abashiri.map(parseTime),
+  }])
+);
+
+const busStopLabel = { mashuEki: '摩周駅前', biruwa: '美留和', kawayu: '川湯駅' };
+const jrStationLabel = { mashu: '摩周駅', biruwa: '美留和駅', kawayu: '川湯温泉駅' };
+
 function fmt(min) {
-  // 隠し時刻スワイプ機能により、minが0未満や1440以上になることがあるため、
-  // 常に0〜1439の範囲（24時間表記）に丸めてから表示する。
-  const normalized = ((min % 1440) + 1440) % 1440;
-  const h = Math.floor(normalized / 60);
-  const m = normalized % 60;
+  if (min == null) return '—';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
   return `${h}:${String(m).padStart(2, '0')}`;
 }
 
-// 3駅を、実際の路線順（川湯温泉 ⇔ 美留和 ⇔ 摩周）に並べる。
-// 隣接駅の「左右」は、この並び順そのものを使う。
-// busStopKeyは、その駅にいちばん近い美留和線バス停への対応キー（BUS_STOPSのキーと一致させる）。
-const STATIONS = [
-  {
-    key: 'kawayu',
-    name: '川湯温泉',
-    ruby: 'かわゆおんせん',
-    kana: 'KAWAYU',
-    color: '#EE0025',
-    busStopKey: 'kawayu',
-    unkouUrl: 'https://www3.jrhokkaido.co.jp/webunkou/timetable.html?id=392',
-    // 上り = 釧路方面、下り = 網走方面
-    kushiro: [toMin(6, 11), toMin(8, 20), toMin(11, 59), toMin(16, 55), toMin(18, 18)],
-    abashiri: [toMin(8, 20), toMin(10, 29), toMin(15, 51), toMin(18, 18)],
-  },
-  {
-    key: 'biruwa',
-    name: '美留和',
-    ruby: 'びるわ',
-    kana: 'BIRUWA',
-    color: '#2F813F',
-    busStopKey: 'biruwa',
-    unkouUrl: 'https://www3.jrhokkaido.co.jp/webunkou/timetable.html?id=391',
-    kushiro: [toMin(6, 18), toMin(8, 28), toMin(12, 7), toMin(17, 3), toMin(18, 27)],
-    abashiri: [toMin(8, 9), toMin(10, 21), toMin(15, 43), toMin(18, 10), toMin(20, 54)],
-  },
-  {
-    key: 'mashu',
-    name: '摩周',
-    ruby: 'ましゅう',
-    kana: 'MASHU',
-    color: '#0098DF',
-    busStopKey: 'mashu',
-    unkouUrl: 'https://www3.jrhokkaido.co.jp/webunkou/timetable.html?id=390',
-    kushiro: [toMin(6, 28), toMin(8, 37), toMin(12, 16), toMin(17, 13), toMin(19, 1), toMin(19, 50)],
-    abashiri: [toMin(8, 0), toMin(10, 12), toMin(15, 34), toMin(18, 1), toMin(20, 45)],
-  },
+// ============ 乗換検索ロジック ============
+// 「JR駅で降りて、その後バスに乗る」または「バス停で降りて、その後JRに乗る」の
+// 直近の乗り継ぎ候補を計算する。乗換に必要な最短時間は5分と仮定。
+const MIN_TRANSFER = 5;
+
+// 91・93・98便は「摩周駅前⇔開発前」間のみの区間便で、美留和・川湯駅・川湯市街地の
+// いずれにも行かない。目的地の停留所が busStopKey として指定されている時点で、
+// その停留所を通らない便は stops[busStopKey] が undefined になるため、
+// 実質的に自動で除外される（区間便のオブジェクトに mashuEki 以外のキーを含めていない）。
+// ただし「摩周駅前へ乗るだけ」のケースで区間便を誤って美留和・川湯方面の便として
+// 案内しないよう、区間便には目的地方面フラグを明示しておく。
+const SECTION_ONLY_TRIPS = busTrips.filter(t => t.sectionOnly).map(t => t.id);
+// 「基準時刻(afterMin)以降で最初に来る便」を0番目とし、そこから skip 分だけ前後にずらした便を返す。
+// skip=0: 直近の便、skip=1: 1本後、skip=-1: 1本前。候補が無い場合は null。
+function findBusAfter(busStopKey, afterMin, direction, skip = 0) {
+  const all = busTrips
+    .filter(t => t.dir === direction && t.stops[busStopKey] != null)
+    .sort((a, b) => a.stops[busStopKey] - b.stops[busStopKey]);
+  const baseIndex = all.findIndex(t => t.stops[busStopKey] >= afterMin);
+  if (baseIndex === -1) return null; // 基準時刻以降に便がない場合、前方向にずらす起点も存在しない
+  const targetIndex = baseIndex + skip;
+  return targetIndex >= 0 && targetIndex < all.length ? all[targetIndex] : null;
+}
+function isSectionOnly(tripId) {
+  return SECTION_ONLY_TRIPS.includes(tripId);
+}
+
+function findJrAfter(jrStationKey, afterMin, direction, skip = 0) {
+  const all = jrTimes[jrStationKey][direction].slice().sort((a, b) => a - b);
+  const baseIndex = all.findIndex(t => t >= afterMin);
+  if (baseIndex === -1) return null;
+  const targetIndex = baseIndex + skip;
+  return targetIndex >= 0 && targetIndex < all.length ? all[targetIndex] : null;
+}
+
+// ============ UIコンポーネント ============
+const ROUTE_OPTIONS = [
+  { key: 'jr_to_bus_mashu', label: 'JRで摩周駅に到着 → バスでどこかへ' },
+  { key: 'jr_to_bus_biruwa', label: 'JRで美留和駅に到着 → バスでどこかへ' },
+  { key: 'jr_to_bus_kawayu', label: 'JRで川湯温泉駅に到着 → バスでどこかへ' },
+  { key: 'bus_to_jr_mashu', label: 'バスで摩周駅前に到着 → JRでどこかへ' },
+  { key: 'bus_to_jr_biruwa', label: 'バスで美留和に到着 → JRでどこかへ' },
+  { key: 'bus_to_jr_kawayu', label: 'バスで川湯駅に到着 → JRでどこかへ' },
 ];
 
-// ============================================================
-// 阿寒バス 美留和線（データ出典：弟子屈バスマップ 令和8年4月発行）
-// 全曜日（平日・土曜・日曜祝日）同じダイヤで運行。
-// JR3駅の最寄りバス停：
-//   川湯温泉駅 ⇔ 「川湯駅」(約12m、実質同一地点)
-//   摩周駅     ⇔ 「摩周駅前」(約24m、実質同一地点)
-//   美留和駅   ⇔ 「美留和」(バス停の座標は未確認だが、路線図・駅名の対応から同一エリアと判断)
-// ============================================================
-const BUS_STOPS = {
-  kawayu: {
-    stopName: '川湯駅',
-    // 便番号: 時刻。方向はBUS_TRIP_DIRECTIONで別管理。
-    times: { 92: toMin(7, 33), 94: toMin(9, 13), 96: toMin(11, 18), 95: toMin(14, 0), 97: toMin(16, 30), 99: toMin(19, 13) },
-  },
-  biruwa: {
-    stopName: '美留和',
-    times: { 92: toMin(7, 40), 94: toMin(9, 20), 96: toMin(11, 25), 95: toMin(13, 53), 97: toMin(16, 23), 99: toMin(19, 6) },
-  },
-  mashu: {
-    stopName: '摩周駅前',
-    times: {
-      92: toMin(8, 20), 94: toMin(10, 0), 91: toMin(10, 15), 96: toMin(12, 5),
-      93: toMin(12, 20), 95: toMin(13, 20), 98: toMin(15, 40), 97: toMin(15, 50), 99: toMin(18, 47),
-    },
-  },
-};
-
-// 各便番号の進行方向。to_mashu = 大鵬相撲記念館前→摩周方面ゆき／to_kawayu = 摩周方面→大鵬相撲記念館前方面ゆき
-const BUS_TRIP_DIRECTION = {
-  92: 'to_mashu', 94: 'to_mashu', 96: 'to_mashu', 98: 'to_mashu',
-  91: 'to_kawayu', 93: 'to_kawayu', 95: 'to_kawayu', 97: 'to_kawayu', 99: 'to_kawayu',
-};
-const BUS_DIRECTION_LABEL = {
-  to_mashu: '摩周方面ゆき',
-  to_kawayu: '大鵬相撲記念館前方面ゆき',
-};
-// 91・93・98便は「摩周駅前⇔開発前」間のみの区間便で、美留和・川湯駅には行かない
-// （BUS_STOPSのkawayu・biruwaのtimesに91・93・98が含まれていないことで、自動的に反映されている）
-// ※ tripIdはObject.entries()由来のため常に文字列。ここも文字列で統一している。
-const BUS_SECTION_ONLY_TRIPS = ['91', '93', '98'];
-
-// 指定バス停の、方向ごとに分かれた「次の1本」を返す。
-// 戻り値: { to_mashu: {tripId, time} | null, to_kawayu: {tripId, time} | null }
-function nextBusByDirection(busStopKey, nowMin) {
-  const stop = BUS_STOPS[busStopKey];
-  const result = { to_mashu: null, to_kawayu: null };
-  if (!stop) return result;
-  Object.entries(stop.times).forEach(([tripId, time]) => {
-    const dir = BUS_TRIP_DIRECTION[tripId];
-    if (time < nowMin) return;
-    if (!result[dir] || time < result[dir].time) {
-      result[dir] = { tripId, time };
-    }
-  });
-  return result;
-}
-
-// 指定バス停の、一日全便を方向別・時刻順に並べたリストを返す。
-function allBusTimesByDirection(busStopKey) {
-  const stop = BUS_STOPS[busStopKey];
-  const grouped = { to_mashu: [], to_kawayu: [] };
-  if (!stop) return grouped;
-  Object.entries(stop.times).forEach(([tripId, time]) => {
-    const dir = BUS_TRIP_DIRECTION[tripId];
-    grouped[dir].push({ tripId, time });
-  });
-  grouped.to_mashu.sort((a, b) => a.time - b.time);
-  grouped.to_kawayu.sort((a, b) => a.time - b.time);
-  return grouped;
-}
-
-// ============================================================
-// JR摩周駅 窓口営業時間（利用者提供）
-// ============================================================
-const MASHU_WINDOW = {
-  label: 'JR摩周駅',
-  tel: '011-222-7111',
-  telHref: 'tel:0112227111',
-  slots: [
-    [toMin(6, 15), toMin(6, 40)],
-    [toMin(7, 30), toMin(10, 30)],
-    [toMin(11, 30), toMin(13, 10)],
-    [toMin(14, 30), toMin(15, 10)],
-  ],
-};
-const SLOT_NUMBERS = ['①', '②', '③', '④'];
-// 営業中ならその枠、まだ始まっていなければ次の枠を返す。本日の営業が全部終わっていればnull。
-function nextWindowSlot(nowMin) {
-  for (let i = 0; i < MASHU_WINDOW.slots.length; i++) {
-    const [start, end] = MASHU_WINDOW.slots[i];
-    if (nowMin >= start && nowMin < end) return { index: i, open: true };
-    if (nowMin < start) return { index: i, open: false };
-  }
-  return null;
-}
-
-// 実際の現在時刻（分）を、端末の時計から取得する。
-// 「本当の現在時刻」を保持する役割で、隠し時刻スワイプ機能（App内のtimeOffset）とは別。
-function useNowMinutes() {
-  const [now, setNow] = useState(() => {
-    const d = new Date();
-    return d.getHours() * 60 + d.getMinutes();
-  });
-  useEffect(() => {
-    const id = setInterval(() => {
-      const d = new Date();
-      setNow(d.getHours() * 60 + d.getMinutes());
-    }, 15000); // 15秒ごとに再判定すれば速報用途としては十分
-    return () => clearInterval(id);
-  }, []);
-  return now;
-}
-
-// 現在時刻以降で最初に来る時刻を1つ返す。無ければnull（本日はもう無い）。
-function nextTrain(times, nowMin) {
-  const sorted = times.slice().sort((a, b) => a - b);
-  const found = sorted.find(t => t >= nowMin);
-  return found != null ? found : null;
-}
-
 export default function App() {
-  const nowMin = useNowMinutes();
+  const [mode, setMode] = useState('jr_to_bus_mashu');
+  const [jrDir, setJrDir] = useState('kushiro'); // JR到着方向: kushiro=釧路方面から, abashiri=網走方面から
+  const [busDir, setBusDir] = useState('to_mashu'); // バス到着方向
+  const [selectedTime, setSelectedTime] = useState(null); // 選んだ「実際の到着時刻」（分）
+  const [skipCount, setSkipCount] = useState(0); // 「次の便」を何回押したか(0=直近の便)
 
-  // ---- 隠し機能：ヘッダーの時刻表示を左右にスワイプすると、仮の時刻に変更できる ----
-  // timeOffsetは「本当の現在時刻」からのズレ（分）。タップで0に戻す。
-  // displayMinが、画面全体で実際に「現在時刻」として使う値。
-  const [timeOffset, setTimeOffset] = useState(0);
-  const displayMin = ((nowMin + timeOffset) % 1440 + 1440) % 1440;
-
-  const [index, setIndex] = useState(1); // 初期表示は美留和駅
-  const station = STATIONS[index];
-
-  const leftStation = index > 0 ? STATIONS[index - 1] : null;
-  const rightStation = index < STATIONS.length - 1 ? STATIONS[index + 1] : null;
-
-  const kushiroNext = useMemo(() => nextTrain(station.kushiro, displayMin), [station, displayMin]);
-  const abashiriNext = useMemo(() => nextTrain(station.abashiri, displayMin), [station, displayMin]);
-
-  // ---- スワイプ操作 ----
-  // 「前の駅名」「今の駅名」「次の駅名」の3枚を横に並べておき、
-  // 指の動きに合わせてその3枚全体を左右に動かす。指を離した時点の位置に応じて、
-  // 隣の駅に完全に切り替えるか、元の位置に戻すかを決める。
-  // パネル1枚分の実際の幅（px）は表示中に測って持っておく（画面幅によって変わるため）。
-  const trackWrapRef = useRef(null);
-  const [panelWidth, setPanelWidth] = useState(340);
-  useEffect(() => {
-    const measure = () => {
-      if (trackWrapRef.current) {
-        setPanelWidth(trackWrapRef.current.offsetWidth);
-      }
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
-  }, []);
-
-  const touchStartX = useRef(null);
-  const [dragOffset, setDragOffset] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const SWIPE_THRESHOLD = panelWidth * 0.25;
-
-  const goPrev = () => setIndex(i => Math.max(0, i - 1));
-  const goNext = () => setIndex(i => Math.min(STATIONS.length - 1, i + 1));
-
-  const handleTouchStart = (e) => {
-    touchStartX.current = e.touches[0].clientX;
-    setIsDragging(true);
-  };
-  const handleTouchMove = (e) => {
-    if (touchStartX.current == null) return;
-    const dx = e.touches[0].clientX - touchStartX.current;
-    // 左端・右端では、それ以上動かない方向への引っ張りを弱く見せる（ゴムのような抵抗感）
-    if ((index === 0 && dx > 0) || (index === STATIONS.length - 1 && dx < 0)) {
-      setDragOffset(dx * 0.3);
+  // ①のモードに応じて、②で選べる「実在する到着時刻」の一覧を作る
+  const availableTimes = useMemo(() => {
+    if (mode.startsWith('jr_to_bus')) {
+      const stationKey = mode.replace('jr_to_bus_', '');
+      return jrTimes[stationKey][jrDir];
     } else {
-      setDragOffset(dx);
+      const stationKey = mode.replace('bus_to_jr_', '');
+      const busStopKey = stationKey === 'mashu' ? 'mashuEki' : stationKey;
+      return busTrips
+        .filter(t => t.dir === busDir && t.stops[busStopKey] != null)
+        .map(t => t.stops[busStopKey])
+        .sort((a, b) => a - b);
     }
+  }, [mode, jrDir, busDir]);
+
+  // モードや方向を変えたら、選択済みの時刻と「次の便」の状態をリセットする
+  const handleModeChange = (newMode) => {
+    setMode(newMode);
+    setSelectedTime(null);
+    setSkipCount(0);
   };
-  const handleTouchEnd = () => {
-    if (dragOffset <= -SWIPE_THRESHOLD && rightStation) {
-      goNext();
-    } else if (dragOffset >= SWIPE_THRESHOLD && leftStation) {
-      goPrev();
-    }
-    setIsDragging(false);
-    setDragOffset(0);
-    touchStartX.current = null;
+  const handleDirChange = (setter, value) => {
+    setter(value);
+    setSelectedTime(null);
+    setSkipCount(0);
+  };
+  const handleSelectTime = (t) => {
+    setSelectedTime(t);
+    setSkipCount(0); // 到着時刻を選び直したら「次の便」もリセット
   };
 
-  // キーボード操作（PCでの確認用）
+  const result = useMemo(() => {
+    if (selectedTime == null) return null;
+    const canTransfer = selectedTime + MIN_TRANSFER;
+    if (mode.startsWith('jr_to_bus')) {
+      const stationKey = mode.replace('jr_to_bus_', '');
+      const busStopKey = stationKey === 'mashu' ? 'mashuEki' : stationKey;
+      const bus = findBusAfter(busStopKey, canTransfer, busDir, skipCount);
+      const hasNext = findBusAfter(busStopKey, canTransfer, busDir, skipCount + 1) != null;
+      const hasPrev = findBusAfter(busStopKey, canTransfer, busDir, skipCount - 1) != null;
+      return { type: 'jr_to_bus', stationKey, busStopKey, bus, canTransfer, hasNext, hasPrev };
+    } else {
+      const stationKey = mode.replace('bus_to_jr_', '');
+      const jrStationKey = stationKey === 'mashu' ? 'mashu' : stationKey;
+      const jr = findJrAfter(jrStationKey, canTransfer, jrDir, skipCount);
+      const hasNext = findJrAfter(jrStationKey, canTransfer, jrDir, skipCount + 1) != null;
+      const hasPrev = findJrAfter(jrStationKey, canTransfer, jrDir, skipCount - 1) != null;
+      return { type: 'bus_to_jr', stationKey, jr, canTransfer, hasNext, hasPrev };
+    }
+  }, [mode, selectedTime, jrDir, busDir, skipCount]);
+
+  // JR釧網本線は、摩周駅・美留和駅・川湯温泉駅のいずれも途中駅であり、路線の終端ではない。
+  // そのため「バスで到着→JRでどこかへ」の場合、釧路方面・網走方面のどちらも常に意味を持つ。
+  const busToJrStationKey = mode.startsWith('bus_to_jr') ? mode.replace('bus_to_jr_', '') : null;
+
+  // ③でJRの行き先(釧路方面 / 網走方面)を切り替えたときは、時刻はそのまま、方向だけ変える
+  const handleJrDirChangeInResult = (value) => {
+    setJrDir(value);
+    setSkipCount(0); // 行き先が変われば「次の便」も最初からやり直す
+    // selectedTimeは維持する(バスの到着時刻は変わらないため)
+  };
+
+  // 停留所の並び順（川湯温泉側 → 摩周側）。ある駅から見て「意味の通る行き先方向」を判定するために使う。
+  // 「摩周駅前」は美留和線の終点(摩周側の端)なので、「摩周駅前方面へ」は意味が成立しない。
+  // 「川湯駅」「美留和」は美留和線の途中の停留所であり、そこからさらに川湯市街地(川湯温泉市街地)へ
+  // 向かう便も、摩周方面へ向かう便も、どちらも実際に存在するため、両方とも意味を持つ。
+  const jrToBusStationKey = mode.startsWith('jr_to_bus') ? mode.replace('jr_to_bus_', '') : null;
+  const jrToBusStopKey = jrToBusStationKey === 'mashu' ? 'mashuEki' : jrToBusStationKey;
+  const showToKawayuOption = true; // 摩周駅・美留和駅・川湯温泉駅、いずれで降りても川湯市街地方面への便は存在する
+  const showToMashuOption = jrToBusStopKey !== 'mashuEki'; // 摩周駅前は美留和線の終点なので、ここへ「向かう」便を出すのは無意味
+
+  // ③で選べる行き先が1つしかない場合は、その方向に自動で固定する
   useEffect(() => {
-    const handler = (e) => {
-      if (e.key === 'ArrowLeft') goPrev();
-      if (e.key === 'ArrowRight') goNext();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
+    if (!mode.startsWith('jr_to_bus')) return;
+    if (!showToKawayuOption) setBusDir('to_mashu');
+    else if (!showToMashuOption) setBusDir('to_kawayu');
+  }, [mode]);
 
-  // ---- 隠し機能：ヘッダーの時刻表示を左右にスワイプすると、仮の時刻に変更できる ----
-  // 指を左右に動かした量(px)を分に換算する。感度は「画面幅いっぱいのスワイプで約3時間分」を目安にした。
-  const timeTouchStartX = useRef(null);
-  const timeTouchStartOffset = useRef(0);
-  const timeMoved = useRef(false);
-  const handleTimeTouchStart = (e) => {
-    timeTouchStartX.current = e.touches[0].clientX;
-    timeTouchStartOffset.current = timeOffset;
-    timeMoved.current = false;
+  // ③のボタンに表示するラベルは、降りた駅によって適切な表現に変える。
+  // 摩周駅・美留和駅で降りた場合は「川湯温泉方面へ」で自然だが、
+  // 川湯温泉駅で降りた場合はすでに川湯温泉にいるため、実際の行き先である「川湯市街地方面へ」と表示する。
+  const toKawayuLabel = jrToBusStopKey === 'kawayu' ? '川湯市街地方面へ' : '川湯温泉方面へ';
+
+
+  // ③でバスの行き先(川湯温泉方面 / 摩周方面)を切り替えたときは、時刻はそのまま、方向だけ変える
+  const handleBusDirChangeInResult = (value) => {
+    setBusDir(value);
+    setSkipCount(0); // 行き先が変われば「次の便」も最初からやり直す
+    // selectedTimeは維持する(JRの到着時刻は変わらないため)
   };
-  const handleTimeTouchMove = (e) => {
-    if (timeTouchStartX.current == null) return;
-    const dx = e.touches[0].clientX - timeTouchStartX.current;
-    if (Math.abs(dx) > 4) timeMoved.current = true; // わずかな指ブレはタップ扱いのまま
-    const minutesPerPixel = 180 / Math.max(panelWidth, 1); // 画面幅いっぱいで約3時間分
-    const deltaMin = Math.round(dx * minutesPerPixel);
-    setTimeOffset(timeTouchStartOffset.current + deltaMin);
-  };
-  const handleTimeTouchEnd = () => {
-    if (!timeMoved.current) {
-      // 指がほぼ動いていなければタップとみなし、本来の現在時刻に戻す
-      setTimeOffset(0);
-    }
-    timeTouchStartX.current = null;
-  };
-
-  // ---- タップで全時刻ポップアップ ----
-  // kind: 'jr' | 'bus'。jrはdirectionに'kushiro'|'abashiri'、busは'to_mashu'|'to_kawayu'を使う。
-  const [popup, setPopup] = useState(null);
-  const closePopup = () => setPopup(null);
-
-  // 現在の駅に対応するバス停の「次の1本」（方向ごと）
-  const busNext = useMemo(
-    () => nextBusByDirection(station.busStopKey, displayMin),
-    [station, displayMin]
-  );
-  const busStopName = BUS_STOPS[station.busStopKey]?.stopName || '';
-
-  // お知らせ：初めて開いたときだけ、0.7秒後に画面中央へ円形で表示し、開いてから4秒後に消す。
-  // 「見た」記録は端末のlocalStorageに残す（使えない環境ではエラーにせず、毎回表示になる）。
-  // 確認用：アドレスの末尾に #notice を付けて開くと、記録に関係なく表示する。
-  const NOTICE_KEY = 'teshikaga-notice-mashu-window-v1';
-  const [noticeVisible, setNoticeVisible] = useState(false);
-  useEffect(() => {
-    let seen = false;
-    try { seen = localStorage.getItem(NOTICE_KEY) === '1'; } catch (e) { /* 記録できない場合は表示する */ }
-    if (window.location.hash === '#notice') seen = false;
-    if (seen) return;
-    const showTimer = setTimeout(() => {
-      setNoticeVisible(true);
-      try { localStorage.setItem(NOTICE_KEY, '1'); } catch (e) { /* 何もしない */ }
-    }, 700);
-    const hideTimer = setTimeout(() => setNoticeVisible(false), 4000);
-    return () => { clearTimeout(showTimer); clearTimeout(hideTimer); };
-  }, []);
-
-  const winSlot = nextWindowSlot(displayMin);
-  const winBadge = !winSlot ? null : winSlot.open ? '営業中' : '次';
-  const winTime = !winSlot
-    ? '本日の営業は終了しました'
-    : winSlot.open
-      ? `〜${fmt(MASHU_WINDOW.slots[winSlot.index][1])}`
-      : `${fmt(MASHU_WINDOW.slots[winSlot.index][0])}～${fmt(MASHU_WINDOW.slots[winSlot.index][1])}`;
-
-  // 白い駅名カードの中に入れる時計。左右の矢印で10分ずつ、数字を左右にスワイプで1分刻みに動かせる。
-  // 駅切り替えのスワイプと混ざらないよう、タッチ操作は外へ伝えない。
-  const stop = (e) => e.stopPropagation();
-  const clockEl = (
-    <div style={styles.clockWrap} onTouchStart={stop} onTouchMove={stop} onTouchEnd={stop}>
-      <div style={styles.clockRow}>
-        <button style={styles.clockArrow} onClick={() => setTimeOffset(o => o - 10)} aria-label="10分戻す">←</button>
-        <div
-          style={styles.clockTime}
-          onTouchStart={handleTimeTouchStart}
-          onTouchMove={handleTimeTouchMove}
-          onTouchEnd={handleTimeTouchEnd}
-        >
-          {fmt(displayMin)}
-        </div>
-        <button style={styles.clockArrow} onClick={() => setTimeOffset(o => o + 10)} aria-label="10分進める">→</button>
-      </div>
-      <div style={styles.clockResetRow}>
-        <button
-          style={{ ...styles.clockReset, visibility: timeOffset !== 0 ? 'visible' : 'hidden' }}
-          onClick={() => setTimeOffset(0)}
-        >
-          現在時刻に戻す
-        </button>
-      </div>
-    </div>
-  );
 
   return (
     <div style={styles.page}>
-      <div
-        style={{ ...styles.notice, opacity: noticeVisible ? 1 : 0, transform: `translate(-50%, -50%) scale(${noticeVisible ? 1 : 0.9})` }}
-        aria-live="polite"
-      >
-        JR摩周駅の<br />窓口営業時間を<br />追加しました
-      </div>
       <div style={styles.container}>
-        <div
-          style={styles.board}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-        >
-          {/* 駅名パネル：前・現在・次の3枚を横に並べ、ドラッグ量に応じて全体をスライドさせる */}
-          <div style={styles.stationTrack} ref={trackWrapRef}>
-            <div
-              style={{
-                display: 'flex',
-                width: panelWidth * 3,
-                transform: `translateX(${-panelWidth + dragOffset}px)`,
-                transition: isDragging ? 'none' : 'transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)',
-              }}
-            >
-              <StationPanel station={leftStation} width={panelWidth} clock={clockEl} />
-              <StationPanel station={station} width={panelWidth} clock={clockEl} />
-              <StationPanel station={rightStation} width={panelWidth} clock={clockEl} />
-            </div>
-          </div>
+        <header style={styles.header}>
+          <div style={styles.kicker}>弟子屈町 交通案内</div>
+          <h1 style={styles.title}>摩周・美留和・川湯温泉<br />乗換案内</h1>
+          <p style={styles.subtitle}>JR釧網本線と阿寒バス美留和線の乗り継ぎを調べます（毎日同じダイヤです）</p>
+        </header>
 
-          {/* 隣駅ヒント（タップでも切り替えられる） */}
-          <div style={styles.neighborRow}>
-            <button
-              style={{ ...styles.neighborButton, visibility: leftStation ? 'visible' : 'hidden' }}
-              onClick={goPrev}
-              aria-label="前の駅へ"
-            >
-              <span style={styles.neighborArrow}>←</span>
-              <span style={styles.neighborName}>{leftStation ? leftStation.name : ''}</span>
-            </button>
-            <button
-              style={{ ...styles.neighborButton, visibility: rightStation ? 'visible' : 'hidden' }}
-              onClick={goNext}
-              aria-label="次の駅へ"
-            >
-              <span style={styles.neighborName}>{rightStation ? rightStation.name : ''}</span>
-              <span style={styles.neighborArrow}>→</span>
-            </button>
-          </div>
-
-          {/* ページドット */}
-          <div style={styles.dotsRow}>
-            {STATIONS.map((s, i) => (
-              <span
-                key={s.key}
-                style={{ ...styles.dot, ...(i === index ? styles.dotActive : {}) }}
-              />
-            ))}
-          </div>
-
-          {/* JR方面別 次の1本 */}
-          <div style={styles.jrSection}>
-            <div style={styles.jrLabelRow}>
-              <span style={styles.jrBadge}>JR</span>
-              <span style={styles.jrLine}>釧網本線</span>
-            </div>
-
-            <div style={styles.directionRow}>
-              <div style={{ ...styles.directionCol, ...styles.directionColJr }} onClick={() => setPopup({ kind: 'jr', direction: 'abashiri' })}>
-                <div style={styles.directionLabel}>← 網走方面</div>
-                {abashiriNext != null ? (
-                  <div style={styles.nextTime}>{fmt(abashiriNext)}</div>
-                ) : (
-                  <div style={styles.noMore}>本日終了</div>
-                )}
-                <div style={styles.tapHint}>タップで全便表示</div>
-              </div>
-              <div style={{ ...styles.directionCol, ...styles.directionColJr }} onClick={() => setPopup({ kind: 'jr', direction: 'kushiro' })}>
-                <div style={styles.directionLabel}>釧路方面 →</div>
-                {kushiroNext != null ? (
-                  <div style={styles.nextTime}>{fmt(kushiroNext)}</div>
-                ) : (
-                  <div style={styles.noMore}>本日終了</div>
-                )}
-                <div style={styles.tapHint}>タップで全便表示</div>
-              </div>
-            </div>
-
-            <a
-              href={station.unkouUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={styles.unkouButton}
-            >
-              運行情報
-              <span style={styles.externalIcon} aria-hidden="true">↗</span>
-            </a>
-
-            {station.key === 'mashu' && (
-              <button style={styles.windowButton} onClick={() => setPopup({ kind: 'window' })}>
-                <div style={styles.windowTextCol}>
-                  <div style={styles.windowCaption}>
-                    <span style={styles.windowTag}>{MASHU_WINDOW.label}</span>
-                    窓口営業時間
-                  </div>
-                  <div style={{ ...styles.windowValue, ...(winSlot ? {} : styles.windowValueOff) }}>
-                    {winBadge && <span style={styles.windowBadge}>{winBadge}</span>}
-                    {winTime}
-                  </div>
-                </div>
-                <span style={styles.windowChevron} aria-hidden="true">›</span>
-              </button>
-            )}
-          </div>
-
-          {/* 阿寒バス 美留和線 方面別 次の1本 */}
-          <div style={styles.busSection}>
-            <div style={styles.busLabelRow}>
-              <span style={styles.busBadge}>BUS</span>
-              <span style={styles.busLine}>美留和線（{busStopName}）</span>
-            </div>
-
-            <div style={styles.directionRow}>
-              <div style={{ ...styles.directionCol, ...styles.directionColBus }} onClick={() => setPopup({ kind: 'bus', direction: 'to_kawayu' })}>
-                <div style={styles.busDirectionLabel}>← 大鵬相撲記念館方面</div>
-                {busNext.to_kawayu ? (
-                  <>
-                    <div style={styles.nextTime}>{fmt(busNext.to_kawayu.time)}</div>
-                    <div style={styles.tripIdLabel}>{busNext.to_kawayu.tripId}便</div>
-                  </>
-                ) : (
-                  <div style={styles.noMore}>本日終了</div>
-                )}
-                <div style={styles.tapHintOnBus}>タップで全便表示</div>
-              </div>
-              <div style={{ ...styles.directionCol, ...styles.directionColBus }} onClick={() => setPopup({ kind: 'bus', direction: 'to_mashu' })}>
-                <div style={styles.busDirectionLabel}>摩周方面 →</div>
-                {busNext.to_mashu ? (
-                  <>
-                    <div style={styles.nextTime}>{fmt(busNext.to_mashu.time)}</div>
-                    <div style={styles.tripIdLabel}>{busNext.to_mashu.tripId}便</div>
-                  </>
-                ) : (
-                  <div style={styles.noMore}>本日終了</div>
-                )}
-                <div style={styles.tapHintOnBus}>タップで全便表示</div>
-              </div>
-            </div>
-
-            {(BUS_SECTION_ONLY_TRIPS.includes(busNext.to_kawayu?.tripId) ||
-              BUS_SECTION_ONLY_TRIPS.includes(busNext.to_mashu?.tripId)) && (
-              <div style={styles.busWarning}>
-                ⚠ 表示中の便には、摩周駅前⇔開発前間のみの区間便が含まれます。美留和・川湯駅方面へは行きません。
-              </div>
-            )}
-          </div>
-        </div>
-
-        {popup && popup.kind === 'jr' && (
-          <TimetablePopup
-            station={station}
-            direction={popup.direction}
-            nowMin={displayMin}
-            onClose={closePopup}
-          />
-        )}
-
-        {popup && popup.kind === 'window' && (
-          <WindowPopup nowMin={displayMin} onClose={closePopup} />
-        )}
-
-        {popup && popup.kind === 'bus' && (
-          <BusTimetablePopup
-            busStopKey={station.busStopKey}
-            direction={popup.direction}
-            nowMin={displayMin}
-            onClose={closePopup}
-          />
-        )}
-
-        <div style={styles.stationSwitcher}>
-          {STATIONS.map((s, i) => (
-            <button
-              key={s.key}
-              onClick={() => setIndex(i)}
-              style={{
-                ...styles.switcherButton,
-                ...(i === index ? styles.switcherButtonActive : {}),
-              }}
-            >
-              {s.name}
-            </button>
-          ))}
-        </div>
-
-        <p style={styles.disclaimerNote}>
-          【注意】内容は目安とし、ご自身でご確認の上ご利用ください
-        </p>
-
-        <p style={styles.footerNote}>
-          出典：JR北海道 釧網本線時刻表（Yahoo!路線情報より確認）／阿寒バス 美留和線時刻表（弟子屈バスマップ 令和8年4月発行）。いずれも平日・土曜・日曜祝日とも同じダイヤです。
-        </p>
-
-        <div style={styles.creditRow}>
-          <img
-            src="/logo_toliodesign.png"
-            alt="tolio design"
-            style={styles.creditLogo}
-            onError={(e) => { e.target.style.display = 'none'; }}
-          />
-          <span style={styles.creditText}>制作：tolio design</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// 駅名パネル1枚分。stationがnull（両端の外側）の場合は空欄にする。
-function StationPanel({ station, width, clock }) {
-  return (
-    <div style={{ ...styles.stationNameWrap, width, flexShrink: 0 }}>
-      {station && (
-        <div style={styles.stationNameBox}>
-          {clock}
-          <div style={styles.stationRuby}>{station.ruby}</div>
-          <div style={{ ...styles.stationName, color: station.color }}>{station.name}</div>
-          <div style={styles.stationKana}>{station.kana}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// タップで開く、その方面の一日全便を縦に並べたポップアップ。
-// 現在時刻より前の便は薄く表示し、次に来る1本には目印を付ける。
-function TimetablePopup({ station, direction, nowMin, onClose }) {
-  const times = (direction === 'kushiro' ? station.kushiro : station.abashiri).slice().sort((a, b) => a - b);
-  const nextIndex = times.findIndex(t => t >= nowMin);
-  const label = direction === 'kushiro' ? '釧路方面' : '網走方面';
-
-  return (
-    <div style={styles.popupOverlay} onClick={onClose}>
-      <div style={styles.popupBox} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.popupHeader}>
-          <div style={styles.popupStationName}>
-            <span style={styles.jrBadge}>JR</span>
-            {station.name}駅
-          </div>
-          <div style={styles.popupDirectionLabel}>{label}</div>
-        </div>
-        <div style={styles.popupList}>
-          {times.map((t, i) => (
-            <div
-              key={i}
-              style={{
-                ...styles.popupTimeRow,
-                ...(i < nextIndex || nextIndex === -1 ? styles.popupTimeRowPast : {}),
-              }}
-            >
-              <span style={styles.popupTime}>{fmt(t)}</span>
-              {i === nextIndex && <span style={styles.popupNextBadge}>次の1本</span>}
-            </div>
-          ))}
-        </div>
-        <button style={styles.popupCloseButton} onClick={onClose}>閉じる</button>
-      </div>
-    </div>
-  );
-}
-
-// JR摩周駅 窓口営業時間のポップアップ
-function WindowPopup({ nowMin, onClose }) {
-  const slot = nextWindowSlot(nowMin);
-  return (
-    <div style={styles.popupOverlay} onClick={onClose}>
-      <div style={styles.popupBox} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.popupHeader}>
-          <div style={styles.popupStationName}>
-            <span style={styles.jrBadge}>JR</span>
-            摩周駅
-          </div>
-          <div style={styles.popupDirectionLabel}>窓口営業時間</div>
-        </div>
-        <div style={styles.popupList}>
-          {MASHU_WINDOW.slots.map(([start, end], i) => {
-            const isNext = slot && slot.index === i;
-            return (
-              <div key={i} style={{ ...styles.popupTimeRow, ...(isNext ? styles.windowRowNext : {}) }}>
-                <div>
-                  <span style={styles.windowNumber}>{SLOT_NUMBERS[i]}</span>
-                  <span style={styles.popupTime}>{fmt(start)}～{fmt(end)}</span>
-                </div>
-                {isNext && <span style={styles.popupNextBadge}>{slot.open ? '営業中' : '次'}</span>}
-              </div>
-            );
-          })}
-        </div>
-        <a href={MASHU_WINDOW.telHref} style={styles.windowTel}>☎︎ {MASHU_WINDOW.tel}</a>
-        <button style={styles.popupCloseButton} onClick={onClose}>閉じる</button>
-      </div>
-    </div>
-  );
-}
-
-// バス版の全便ポップアップ。便番号を併記し、区間便には個別に注記を付ける。
-function BusTimetablePopup({ busStopKey, direction, nowMin, onClose }) {
-  const stop = BUS_STOPS[busStopKey];
-  const grouped = allBusTimesByDirection(busStopKey);
-  const trips = grouped[direction];
-  const nextIndex = trips.findIndex(t => t.time >= nowMin);
-  const label = BUS_DIRECTION_LABEL[direction];
-
-  return (
-    <div style={styles.popupOverlay} onClick={onClose}>
-      <div style={styles.popupBox} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.popupHeader}>
-          <div style={styles.popupStationName}>
-            <span style={styles.busBadge}>BUS</span>
-            {stop?.stopName}
-          </div>
-          <div style={styles.popupDirectionLabel}>{label}</div>
-        </div>
-        <div style={styles.popupList}>
-          {trips.length === 0 && (
-            <div style={styles.noTimesInPopup}>この方向の便はありません</div>
-          )}
-          {trips.map((t, i) => {
-            const sectionOnly = BUS_SECTION_ONLY_TRIPS.includes(t.tripId);
-            return (
-              <div
-                key={i}
+        <section style={styles.card}>
+          <div style={styles.stepLabel}>① どちらから、どちらへ乗り継ぎますか</div>
+          <div style={styles.optionGrid}>
+            {ROUTE_OPTIONS.map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => handleModeChange(opt.key)}
                 style={{
-                  ...styles.popupTimeRow,
-                  ...(i < nextIndex || nextIndex === -1 ? styles.popupTimeRowPast : {}),
+                  ...styles.optionButton,
+                  ...(mode === opt.key ? styles.optionButtonActive : {}),
                 }}
               >
-                <div>
-                  <span style={styles.popupTime}>{fmt(t.time)}</span>
-                  <span style={styles.popupTripId}>{t.tripId}便</span>
-                  {sectionOnly && <div style={styles.popupSectionNote}>※開発前までの区間便</div>}
-                </div>
-                {i === nextIndex && <span style={styles.popupNextBadge}>次の1本</span>}
-              </div>
-            );
-          })}
-        </div>
-        <button style={styles.popupCloseButton} onClick={onClose}>閉じる</button>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section style={styles.card}>
+          {mode.startsWith('jr_to_bus') && (
+            <div style={styles.dirRow}>
+              <span style={styles.dirLabel}>JRが来る方向</span>
+              <button onClick={() => handleDirChange(setJrDir, 'kushiro')} style={{...styles.dirButton, ...(jrDir==='kushiro'?styles.dirButtonActive:{})}}>釧路方面から</button>
+              <button onClick={() => handleDirChange(setJrDir, 'abashiri')} style={{...styles.dirButton, ...(jrDir==='abashiri'?styles.dirButtonActive:{})}}>網走方面から</button>
+            </div>
+          )}
+          {mode.startsWith('bus_to_jr') && (
+            <div style={styles.dirRow}>
+              <span style={styles.dirLabel}>乗ってきたバスの向き</span>
+              <button onClick={() => handleDirChange(setBusDir, 'to_mashu')} style={{...styles.dirButton, ...(busDir==='to_mashu'?styles.dirButtonActive:{})}}>川湯温泉側→摩周方面ゆき</button>
+              <button onClick={() => handleDirChange(setBusDir, 'to_kawayu')} style={{...styles.dirButton, ...(busDir==='to_kawayu'?styles.dirButtonActive:{})}}>摩周方面→川湯温泉側ゆき</button>
+            </div>
+          )}
+
+          <div style={styles.stepLabel2}>② 到着する時刻を選んでください</div>
+          <div style={styles.timeGrid}>
+            {availableTimes.length === 0 && (
+              <div style={styles.emptyTimes}>この条件では便がありません</div>
+            )}
+            {availableTimes.map((t, i) => (
+              <button
+                key={i}
+                onClick={() => handleSelectTime(t)}
+                style={{
+                  ...styles.timeChip,
+                  ...(selectedTime === t ? styles.timeChipActive : {}),
+                }}
+              >
+                {fmt(t)}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section style={styles.resultCard}>
+          <div style={styles.stepLabel}>③ 乗り継ぎ候補</div>
+
+          {mode.startsWith('jr_to_bus') && (showToKawayuOption || showToMashuOption) && (
+            <div style={styles.resultDirRow}>
+              <span style={styles.resultDirLabel}>バスの行き先</span>
+              {showToKawayuOption && (
+                <button
+                  onClick={() => handleBusDirChangeInResult('to_kawayu')}
+                  style={{...styles.resultDirButton, ...(busDir==='to_kawayu'?styles.resultDirButtonActive:{})}}
+                >
+                  {toKawayuLabel}
+                </button>
+              )}
+              {showToMashuOption && (
+                <button
+                  onClick={() => handleBusDirChangeInResult('to_mashu')}
+                  style={{...styles.resultDirButton, ...(busDir==='to_mashu'?styles.resultDirButtonActive:{})}}
+                >
+                  摩周駅前方面へ
+                </button>
+              )}
+            </div>
+          )}
+
+          {mode.startsWith('bus_to_jr') && (
+            <div style={styles.resultDirRow}>
+              <span style={styles.resultDirLabel}>JRの行き先</span>
+              <button
+                onClick={() => handleJrDirChangeInResult('kushiro')}
+                style={{...styles.resultDirButton, ...(jrDir==='kushiro'?styles.resultDirButtonActive:{})}}
+              >
+                釧路方面へ
+              </button>
+              <button
+                onClick={() => handleJrDirChangeInResult('abashiri')}
+                style={{...styles.resultDirButton, ...(jrDir==='abashiri'?styles.resultDirButtonActive:{})}}
+              >
+                網走方面へ
+              </button>
+            </div>
+          )}
+
+          {selectedTime == null ? (
+            <div style={styles.noResult}>
+              <p>上の②で、到着時刻を選んでください。</p>
+            </div>
+          ) : (
+            <ResultDisplay
+              result={result}
+              arriveMin={selectedTime}
+              skipCount={skipCount}
+              onNext={() => setSkipCount(c => c + 1)}
+              onPrev={() => setSkipCount(c => c - 1)}
+            />
+          )}
+        </section>
+
+        <footer style={styles.footer}>
+          <p>出典：弟子屈町地域公共交通活性化協議会「弟子屈バスマップ」({timetable.meta.busRevision}) ／ JR北海道 釧網本線時刻表（Yahoo!路線情報より）</p>
+          <p style={styles.footerNote}>※バス・JRとも、平日・土曜・日曜祝日で同じダイヤであることを確認済みのため、曜日を問わずこの時刻表をご利用いただけます。乗換に必要な時間は5分と仮定しています。実際にご利用の際は最新の公式時刻表もあわせてご確認ください。</p>
+        </footer>
       </div>
     </div>
   );
+}
+
+function ResultDisplay({ result, arriveMin, skipCount, onNext, onPrev }) {
+  if (result.type === 'jr_to_bus') {
+    const stopName = busStopLabel[result.busStopKey === 'mashu' ? 'mashuEki' : result.busStopKey] || busStopLabel[result.busStopKey];
+    if (!result.bus) {
+      const direction = skipCount > 0 ? 'これ以上後の' : skipCount < 0 ? 'これより前の' : '';
+      return (
+        <div style={styles.noResult}>
+          <div style={styles.noResultIcon}>—</div>
+          <p>{fmt(arriveMin)}以降、{direction}この方向のバスが見つかりませんでした。</p>
+        </div>
+      );
+    }
+    const boardTime = result.bus.stops[result.busStopKey];
+    const wait = boardTime - arriveMin;
+    const sectionOnly = isSectionOnly(result.bus.id);
+    const missedConnection = wait < MIN_TRANSFER; // 1本前などに戻した結果、乗換に間に合わない場合
+    return (
+      <div style={styles.resultBox}>
+        {skipCount !== 0 && (
+          <div style={styles.skipBadge}>{skipCount > 0 ? `${skipCount}本後` : `${-skipCount}本前`}の候補</div>
+        )}
+        <div style={styles.resultLine}>
+          <span style={styles.resultBadge}>JR到着</span>
+          <span style={styles.resultTime}>{fmt(arriveMin)}</span>
+        </div>
+        <div style={styles.arrow}>↓ 待ち時間 約{wait}分</div>
+        <div style={styles.resultLine}>
+          <span style={styles.resultBadge}>バス乗車</span>
+          <span style={styles.resultTime}>{fmt(boardTime)}</span>
+          <span style={styles.resultSub}>{result.bus.id}便・{stopName}発</span>
+        </div>
+        {missedConnection && (
+          <div style={styles.warningBox}>
+            ⚠ この時刻ではすでに発車済み、または乗換に間に合いません。参考情報としてご覧ください。
+          </div>
+        )}
+        {sectionOnly && (
+          <div style={styles.warningBox}>
+            ⚠ この便（{result.bus.id}便）は「開発前」までの区間便です。美留和・川湯温泉方面へは行きませんのでご注意ください。
+          </div>
+        )}
+        <div style={styles.navRow}>
+          {result.hasPrev && (
+            <button style={styles.navButton} onClick={onPrev}>← 1本前</button>
+          )}
+          {result.hasNext && (
+            <button style={styles.navButton} onClick={onNext}>1本後 →</button>
+          )}
+        </div>
+      </div>
+    );
+  } else {
+    if (!result.jr) {
+      const direction = skipCount > 0 ? 'これ以上後の' : skipCount < 0 ? 'これより前の' : '';
+      return (
+        <div style={styles.noResult}>
+          <div style={styles.noResultIcon}>—</div>
+          <p>{fmt(arriveMin)}以降、{direction}この方向のJRが見つかりませんでした。</p>
+        </div>
+      );
+    }
+    const wait = result.jr - arriveMin;
+    const missedConnection = wait < MIN_TRANSFER;
+    return (
+      <div style={styles.resultBox}>
+        {skipCount !== 0 && (
+          <div style={styles.skipBadge}>{skipCount > 0 ? `${skipCount}本後` : `${-skipCount}本前`}の候補</div>
+        )}
+        <div style={styles.resultLine}>
+          <span style={styles.resultBadge}>バス到着</span>
+          <span style={styles.resultTime}>{fmt(arriveMin)}</span>
+        </div>
+        <div style={styles.arrow}>↓ 待ち時間 約{wait}分</div>
+        <div style={styles.resultLine}>
+          <span style={styles.resultBadge}>JR乗車</span>
+          <span style={styles.resultTime}>{fmt(result.jr)}</span>
+        </div>
+        {missedConnection && (
+          <div style={styles.warningBox}>
+            ⚠ この時刻ではすでに発車済み、または乗換に間に合いません。参考情報としてご覧ください。
+          </div>
+        )}
+        <div style={styles.navRow}>
+          {result.hasPrev && (
+            <button style={styles.navButton} onClick={onPrev}>← 1本前</button>
+          )}
+          {result.hasNext && (
+            <button style={styles.navButton} onClick={onNext}>1本後 →</button>
+          )}
+        </div>
+      </div>
+    );
+  }
 }
 
 const styles = {
-  notice: {
-    position: 'fixed', top: '50%', left: '50%', width: 250, height: 250, borderRadius: '50%',
-    background: '#0098DF', color: '#FFFFFF',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-    fontSize: 23, fontWeight: 800, lineHeight: 1.6, boxShadow: '0 8px 28px rgba(0,0,0,0.35)',
-    zIndex: 200, pointerEvents: 'none', transition: 'opacity 0.4s, transform 0.4s',
-  },
-  clockWrap: { marginBottom: 6 },
-  clockRow: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 },
-  clockArrow: {
-    width: 38, height: 38, borderRadius: '50%', border: '1px solid #D8D3C6',
-    background: '#FBFAF7', color: '#5E5A52', fontSize: 18, cursor: 'pointer', padding: 0,
-  },
-  clockTime: {
-    minWidth: 76, textAlign: 'center', fontSize: 22, fontWeight: 800, color: '#5E5A52',
-    fontVariantNumeric: 'tabular-nums', letterSpacing: 0.5, touchAction: 'none', cursor: 'ew-resize',
-  },
-  clockResetRow: { height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' },
-  clockReset: {
-    fontSize: 12, color: '#FFFFFF', background: '#5E7A68', border: 'none',
-    borderRadius: 12, padding: '4px 12px', cursor: 'pointer',
-  },
-  windowButton: {
-    position: 'relative', display: 'flex', alignItems: 'center', gap: 10, width: '100%', marginTop: 10,
-    padding: '11px 30px', background: '#FFFFFF', border: '1.5px solid #2F813F',
-    borderRadius: 12, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', color: '#1C2B22',
-  },
-  windowTextCol: { flex: 1, textAlign: 'center' },
-  windowCaption: { fontSize: 17, color: '#0B3D18', fontWeight: 800 },
-  windowBadge: {
-    display: 'inline-block', background: '#FBEFB0', color: '#C0392B', fontSize: 14,
-    fontWeight: 800, padding: '2px 9px', borderRadius: 6, marginRight: 8, verticalAlign: 'middle',
-  },
-  windowTag: {
-    display: 'inline-block', background: '#2F813F', color: '#FFFFFF', fontSize: 12,
-    fontWeight: 800, padding: '2px 8px', borderRadius: 6, marginRight: 8, verticalAlign: 'middle',
-  },
-  windowValue: { fontSize: 19, fontWeight: 800, color: '#0B3D18', marginTop: 4, fontVariantNumeric: 'tabular-nums' },
-  windowValueOff: { fontSize: 16, color: '#6E6A62' },
-  windowChevron: { position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 22, color: '#2F813F' },
-  windowRowNext: { background: '#FBEFB0', borderRadius: 8 },
-  windowNumber: { color: '#B8442F', fontWeight: 800, marginRight: 10, fontSize: 19 },
-  windowTel: {
-    display: 'block', marginTop: 14, padding: '8px 4px', fontSize: 21, fontWeight: 800,
-    color: '#2F813F', textDecoration: 'none',
-  },
   page: {
     minHeight: '100vh',
-    background: '#1C2B22',
+    background: '#F3F1EB',
     fontFamily: "'Hiragino Sans', 'Yu Gothic', sans-serif",
     padding: '32px 16px',
-    color: '#F5F2EA',
-    display: 'flex',
-    justifyContent: 'center',
+    color: '#2B2A26',
   },
   container: {
-    width: '100%',
-    maxWidth: 380,
+    maxWidth: 480,
+    margin: '0 auto',
   },
-  currentTimeRow: {
-    textAlign: 'center',
+  header: {
+    marginBottom: 28,
+  },
+  kicker: {
     fontSize: 13,
-    color: 'rgba(245,242,234,0.55)',
-    marginBottom: 18,
-    fontVariantNumeric: 'tabular-nums',
-    letterSpacing: 0.5,
-  },
-  board: {
-    background: '#F5F2EA',
-    borderRadius: 20,
-    padding: '28px 20px 24px',
-    color: '#1C2B22',
-    touchAction: 'pan-y',
-    userSelect: 'none',
-  },
-  stationTrack: {
-    overflow: 'hidden',
-    width: '100%',
-  },
-  neighborRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    marginTop: 4,
-    marginBottom: 6,
-  },
-  neighborButton: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    background: 'none',
-    border: 'none',
-    padding: '6px 4px',
-    cursor: 'pointer',
-    color: '#8A8578',
-    fontSize: 20,
-    fontWeight: 700,
-  },
-  neighborArrow: {
-    fontSize: 20,
-    color: '#C94E3F',
-  },
-  neighborName: {
-    whiteSpace: 'nowrap',
-  },
-  stationNameWrap: {
-    textAlign: 'center',
-    padding: '14px 0 6px',
-  },
-  stationNameBox: {
-    display: 'block',
-    boxSizing: 'border-box',
-    width: '100%',
-    background: '#FFFFFF',
-    borderRadius: 20,
-    padding: '14px 28px',
-    boxShadow: '0 1px 4px rgba(28,43,34,0.08)',
-  },
-  stationRuby: {
-    fontSize: 13,
-    letterSpacing: 3,
-    color: '#8A8578',
-    fontWeight: 700,
-    marginBottom: 2,
-  },
-  stationName: {
-    fontSize: 52,
-    fontWeight: 800,
-    lineHeight: 1.15,
     letterSpacing: 1,
-  },
-  stationKana: {
-    fontSize: 13,
-    letterSpacing: 3,
-    color: '#8A8578',
-    marginTop: 4,
+    color: '#4C7A5E',
     fontWeight: 700,
+    marginBottom: 8,
   },
-  dotsRow: {
-    display: 'flex',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 14,
-    marginBottom: 22,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: '50%',
-    background: '#D8D3C6',
-  },
-  dotActive: {
-    background: '#C94E3F',
-    width: 16,
-  },
-  jrSection: {
-    background: 'linear-gradient(155deg, #EDEFF0 0%, #E1E4E6 45%, #E9EBEC 70%, #DADDDF 100%)',
-    border: '1px solid #D2D5D7',
-    borderRadius: 14,
-    marginTop: 22,
-    padding: 16,
-  },
-  jrLabelRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  jrBadge: {
-    fontSize: 12,
+  title: {
+    fontSize: 28,
+    lineHeight: 1.35,
     fontWeight: 800,
-    color: '#FFFFFF',
-    background: '#03C13D',
-    borderRadius: 5,
-    padding: '2px 6px',
+    margin: '0 0 10px 0',
+    color: '#1F2E22',
   },
-  jrLine: {
-    fontSize: 19.5,
-    color: '#0B3D18',
-    fontWeight: 700,
-  },
-  unkouButton: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 10,
-    padding: '11px 0',
-    background: '#03C13D',
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: 700,
-    borderRadius: 10,
-    textDecoration: 'none',
-  },
-  externalIcon: {
-    fontSize: 17,
-    fontWeight: 800,
-    lineHeight: 1,
-  },
-  busSection: {
-    background: '#E3F5F6',
-    border: '1px solid #C8F1F3',
-    borderRadius: 14,
-    marginTop: 22,
-    padding: 16,
-  },
-  busLabelRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  busBadge: {
-    fontSize: 12,
-    fontWeight: 800,
-    color: '#FFFFFF',
-    background: '#3FB696',
-    borderRadius: 5,
-    padding: '2px 6px',
-  },
-  busLine: {
-    fontSize: 19.5,
-    color: '#1F7A6E',
-    fontWeight: 700,
-  },
-  busDirectionLabel: {
-    display: 'inline-block',
-    fontSize: 13,
-    color: '#6B3A2E',
-    background: '#FBEFB0',
-    fontWeight: 800,
-    letterSpacing: 0.2,
-    padding: '3px 9px',
-    borderRadius: 5,
-    marginBottom: 10,
-  },
-  tripIdLabel: {
-    fontSize: 11,
-    color: '#5C8A83',
-    fontWeight: 700,
-    marginTop: 2,
-  },
-  busWarning: {
-    marginTop: 14,
-    padding: '10px 12px',
-    background: 'rgba(201,78,63,0.18)',
-    border: '1px solid rgba(201,78,63,0.4)',
-    borderRadius: 10,
-    fontSize: 11.5,
+  subtitle: {
+    fontSize: 14,
+    color: '#65605A',
+    margin: 0,
     lineHeight: 1.6,
-    color: '#8A4237',
   },
-  directionRow: {
+  card: {
+    background: '#FFFFFF',
+    borderRadius: 14,
+    padding: 20,
+    marginBottom: 16,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+    border: '1px solid #E7E3D9',
+  },
+  resultCard: {
+    background: '#1F2E22',
+    borderRadius: 14,
+    padding: 20,
+    marginBottom: 16,
+    color: '#F3F1EB',
+  },
+  resultDirRow: {
     display: 'flex',
-    alignItems: 'stretch',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginBottom: 16,
+    paddingBottom: 16,
+    borderBottom: '1px solid rgba(255,255,255,0.15)',
+  },
+  resultDirLabel: {
+    fontSize: 13,
+    opacity: 0.7,
+    marginRight: 4,
+  },
+  resultDirButton: {
+    padding: '7px 12px',
+    borderRadius: 20,
+    border: '1px solid rgba(255,255,255,0.3)',
+    background: 'transparent',
+    color: '#F3F1EB',
+    fontSize: 13,
+    cursor: 'pointer',
+  },
+  resultDirButtonActive: {
+    background: '#4C7A5E',
+    borderColor: '#4C7A5E',
+    color: '#FFFFFF',
+    fontWeight: 700,
+  },
+  stepLabel: {
+    fontSize: 13,
+    fontWeight: 700,
+    marginBottom: 14,
+    opacity: 0.75,
+  },
+  stepLabel2: {
+    fontSize: 13,
+    fontWeight: 700,
+    marginTop: 18,
+    marginBottom: 12,
+    opacity: 0.75,
+  },
+  timeGrid: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  timeChip: {
+    padding: '10px 16px',
+    borderRadius: 10,
+    border: '1px solid #D8D3C6',
+    background: '#FBFAF7',
+    fontSize: 16,
+    fontWeight: 700,
+    fontVariantNumeric: 'tabular-nums',
+    cursor: 'pointer',
+    color: '#2B2A26',
+  },
+  timeChipActive: {
+    background: '#1F2E22',
+    borderColor: '#1F2E22',
+    color: '#FFFFFF',
+  },
+  emptyTimes: {
+    fontSize: 13,
+    color: '#8C877D',
+    padding: '8px 0',
+  },
+  optionGrid: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  optionButton: {
+    textAlign: 'left',
+    padding: '12px 14px',
+    borderRadius: 10,
+    border: '1px solid #E7E3D9',
+    background: '#FBFAF7',
+    fontSize: 14,
+    cursor: 'pointer',
+    color: '#2B2A26',
+    transition: 'all 0.15s',
+  },
+  optionButtonActive: {
+    background: '#4C7A5E',
+    borderColor: '#4C7A5E',
+    color: '#FFFFFF',
+    fontWeight: 700,
+  },
+  dirRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  dirLabel: {
+    fontSize: 13,
+    color: '#65605A',
+    marginRight: 4,
+  },
+  dirButton: {
+    padding: '7px 12px',
+    borderRadius: 20,
+    border: '1px solid #D8D3C6',
+    background: '#FBFAF7',
+    fontSize: 13,
+    cursor: 'pointer',
+  },
+  dirButtonActive: {
+    background: '#2B2A26',
+    borderColor: '#2B2A26',
+    color: '#fff',
+    fontWeight: 700,
+  },
+  resultBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 4,
+  },
+  resultLine: {
+    display: 'flex',
+    alignItems: 'baseline',
     gap: 10,
   },
-  directionCol: {
-    flex: 1,
-    textAlign: 'center',
-    padding: '10px 6px',
-    cursor: 'pointer',
-    borderRadius: 12,
-    transition: 'background 0.15s',
-  },
-  directionColJr: {
-    background: '#D7DADC',
-  },
-  directionColBus: {
-    background: '#CBEAEC',
-  },
-  directionLabel: {
-    display: 'inline-block',
-    fontSize: 13,
-    color: '#6B3A2E',
-    background: '#FBEFB0',
-    fontWeight: 800,
-    letterSpacing: 0.2,
-    padding: '3px 9px',
-    borderRadius: 5,
-    marginBottom: 10,
-  },
-  nextTime: {
-    fontSize: 28,
-    fontWeight: 800,
-    fontVariantNumeric: 'tabular-nums',
-    color: '#B34129',
-  },
-  noMore: {
-    fontSize: 15,
-    color: '#6E6A62',
-    fontWeight: 700,
-    padding: '10px 0',
-  },
-  tapHint: {
-    fontSize: 10.5,
-    color: '#6B8577',
-    marginTop: 8,
-    fontWeight: 600,
-  },
-  tapHintOnBus: {
-    fontSize: 10.5,
-    color: '#5A6E6B',
-    marginTop: 8,
-    fontWeight: 600,
-  },
-  popupOverlay: {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(28,43,34,0.55)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-    zIndex: 100,
-  },
-  popupBox: {
-    background: '#F5F2EA',
-    borderRadius: 20,
-    padding: '22px 22px 18px',
-    width: '100%',
-    maxWidth: 300,
-    maxHeight: '80vh',
-    display: 'flex',
-    flexDirection: 'column',
-    color: '#1C2B22',
-  },
-  popupHeader: {
-    marginBottom: 4,
-  },
-  popupStationName: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    fontSize: 20,
-    fontWeight: 800,
-  },
-  popupDirectionLabel: {
-    display: 'inline-block',
-    fontSize: 16,
-    color: '#6B3A2E',
-    background: '#FBEFB0',
-    fontWeight: 800,
-    padding: '5px 12px',
-    borderRadius: 5,
-    marginTop: 8,
-    marginBottom: 14,
-  },
-  popupList: {
-    overflowY: 'auto',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
-    borderTop: '1px solid #E2DDCF',
-    paddingTop: 4,
-  },
-  popupTimeRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '10px 4px',
-    borderBottom: '1px solid #E2DDCF',
-  },
-  popupTimeRowPast: {
-    opacity: 0.35,
-  },
-  popupTime: {
-    fontSize: 19,
-    fontWeight: 800,
-    fontVariantNumeric: 'tabular-nums',
-  },
-  popupTripId: {
+  resultBadge: {
     fontSize: 12,
-    color: '#8A8578',
+    background: 'rgba(255,255,255,0.12)',
+    padding: '3px 8px',
+    borderRadius: 6,
     fontWeight: 700,
-    marginLeft: 8,
   },
-  popupSectionNote: {
-    fontSize: 10.5,
-    color: '#C94E3F',
-    fontWeight: 700,
-    marginTop: 2,
-  },
-  noTimesInPopup: {
-    fontSize: 13,
-    color: '#8A8578',
-    padding: '16px 4px',
-    textAlign: 'center',
-  },
-  popupNextBadge: {
-    fontSize: 11,
+  resultTime: {
+    fontSize: 26,
     fontWeight: 800,
-    color: '#C94E3F',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  resultSub: {
+    fontSize: 13,
+    opacity: 0.75,
+  },
+  arrow: {
+    fontSize: 13,
+    opacity: 0.7,
+    margin: '6px 0 6px 4px',
+  },
+  noResult: {
+    textAlign: 'center',
+    padding: '20px 0',
+  },
+  warningBox: {
+    marginTop: 12,
+    padding: '10px 12px',
+    background: 'rgba(217,119,87,0.18)',
+    border: '1px solid rgba(217,119,87,0.4)',
+    borderRadius: 8,
+    fontSize: 12.5,
+    lineHeight: 1.6,
+  },
+  skipBadge: {
+    fontSize: 11.5,
+    fontWeight: 700,
+    color: 'rgba(243,241,235,0.65)',
+    marginBottom: 8,
     letterSpacing: 0.5,
   },
-  popupCloseButton: {
+  navRow: {
+    display: 'flex',
+    gap: 8,
     marginTop: 16,
-    padding: '11px 0',
-    borderRadius: 12,
-    border: 'none',
-    background: '#1C2B22',
-    color: '#F5F2EA',
+  },
+  navButton: {
+    flex: 1,
+    padding: '10px 14px',
+    borderRadius: 10,
+    border: '1px solid rgba(255,255,255,0.3)',
+    background: 'rgba(255,255,255,0.08)',
+    color: '#F3F1EB',
     fontSize: 14,
     fontWeight: 700,
     cursor: 'pointer',
   },
-  stationSwitcher: {
-    display: 'flex',
-    gap: 8,
-    marginTop: 20,
+  noResultIcon: {
+    fontSize: 28,
+    marginBottom: 8,
+    opacity: 0.5,
   },
-  switcherButton: {
-    flex: 1,
-    padding: '10px 6px',
-    borderRadius: 10,
-    border: '1px solid rgba(245,242,234,0.25)',
-    background: 'transparent',
-    color: 'rgba(245,242,234,0.7)',
-    fontSize: 13,
-    fontWeight: 700,
-    cursor: 'pointer',
-  },
-  switcherButtonActive: {
-    background: '#F5F2EA',
-    borderColor: '#F5F2EA',
-    color: '#1C2B22',
-  },
-  disclaimerNote: {
-    fontSize: 12,
-    color: 'rgba(245,242,234,0.45)',
-    textAlign: 'center',
+  footer: {
+    fontSize: 11.5,
+    color: '#8C877D',
     lineHeight: 1.7,
-    marginTop: 20,
+    marginTop: 24,
   },
   footerNote: {
-    fontSize: 11,
-    color: 'rgba(245,242,234,0.45)',
-    textAlign: 'center',
-    lineHeight: 1.7,
-    marginTop: 10,
-  },
-  creditRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 14,
-  },
-  creditLogo: {
-    width: 16,
-    height: 16,
-    opacity: 0.75,
-  },
-  creditText: {
-    fontSize: 11,
-    color: 'rgba(245,242,234,0.45)',
-    letterSpacing: 0.3,
+    marginTop: 6,
   },
 };
