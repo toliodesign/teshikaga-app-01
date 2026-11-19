@@ -1,0 +1,140 @@
+{
+ "meta": {
+  "busRevision": "令和8年4月発行",
+  "busSource": "弟子屈町地域公共交通活性化協議会「弟子屈バスマップ」",
+  "jrSource": "JR北海道 釧網本線時刻表（Yahoo!路線情報より）"
+ },
+ "busTrips": [
+  {
+   "id": "92",
+   "dir": "to_mashu",
+   "stops": {
+    "kawayu": "7:33",
+    "biruwa": "7:40",
+    "mashuEki": "8:20"
+   }
+  },
+  {
+   "id": "94",
+   "dir": "to_mashu",
+   "stops": {
+    "kawayu": "9:13",
+    "biruwa": "9:20",
+    "mashuEki": "10:00"
+   }
+  },
+  {
+   "id": "96",
+   "dir": "to_mashu",
+   "stops": {
+    "kawayu": "11:18",
+    "biruwa": "11:25",
+    "mashuEki": "12:05"
+   }
+  },
+  {
+   "id": "98",
+   "dir": "to_mashu",
+   "sectionOnly": true,
+   "stops": {
+    "mashuEki": "15:40"
+   }
+  },
+  {
+   "id": "91",
+   "dir": "to_kawayu",
+   "sectionOnly": true,
+   "stops": {
+    "mashuEki": "10:15"
+   }
+  },
+  {
+   "id": "93",
+   "dir": "to_kawayu",
+   "sectionOnly": true,
+   "stops": {
+    "mashuEki": "12:20"
+   }
+  },
+  {
+   "id": "95",
+   "dir": "to_kawayu",
+   "stops": {
+    "mashuEki": "13:20",
+    "biruwa": "13:53",
+    "kawayu": "14:00"
+   }
+  },
+  {
+   "id": "97",
+   "dir": "to_kawayu",
+   "stops": {
+    "mashuEki": "15:50",
+    "biruwa": "16:23",
+    "kawayu": "16:30"
+   }
+  },
+  {
+   "id": "99",
+   "dir": "to_kawayu",
+   "stops": {
+    "biruwa": "19:06",
+    "kawayu": "19:13",
+    "mashuEki": "18:47"
+   }
+  }
+ ],
+ "jr": {
+  "mashu": {
+   "name": "摩周駅",
+   "kushiro": [
+    "6:28",
+    "8:37",
+    "12:16",
+    "17:13",
+    "19:01",
+    "19:50"
+   ],
+   "abashiri": [
+    "8:00",
+    "10:12",
+    "15:34",
+    "18:01",
+    "20:45"
+   ]
+  },
+  "biruwa": {
+   "name": "美留和駅",
+   "kushiro": [
+    "6:18",
+    "8:28",
+    "12:07",
+    "17:03",
+    "18:27"
+   ],
+   "abashiri": [
+    "8:09",
+    "10:21",
+    "15:43",
+    "18:10",
+    "20:54"
+   ]
+  },
+  "kawayu": {
+   "name": "川湯温泉駅",
+   "kushiro": [
+    "6:11",
+    "8:20",
+    "11:59",
+    "16:55",
+    "18:18"
+   ],
+   "abashiri": [
+    "8:20",
+    "10:29",
+    "15:51",
+    "18:18"
+   ]
+  }
+ }
+}
